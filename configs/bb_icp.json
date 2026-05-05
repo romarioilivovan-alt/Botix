@@ -1,0 +1,65 @@
+{
+  "mode": "paper",
+  "autostart": true,
+  "mexc_web": {
+    "web_uid": "",
+    "device_id": "",
+    "mhash": "",
+    "proxy": null
+  },
+  "universe": {
+    "refresh_sec": 600,
+    "max_symbols": 5,
+    "require_binance_ref": true,
+    "min_book_notional_usdt": 5000,
+    "exclude": [],
+    "include_only": [
+      "ICP_USDT"
+    ],
+    "force_include_symbols": [
+      "ICP_USDT"
+    ]
+  },
+  "strategy": {
+    "algorithm": "bb_revert",
+    "invert": false,
+    "taker_entry": true,
+    "bb_revert_z_entry": 2.0,
+    "bb_revert_z_exit": 0.3,
+    "bb_revert_z_max": 4.0,
+    "min_spread_samples": 30,
+    "min_sigma_bps": 0.3,
+    "min_book_depth_usdt": 5000,
+    "require_ofi_alignment": false,
+    "sigma_spread_window_sec": 30.0,
+    "ofi_window_sec": 0.5,
+    "fair_velocity_window_sec": 1.0,
+    "hard_sl_margin_pct": 0.02,
+    "hard_sl_pct": 0.0,
+    "breakeven_at_sigma": 0.5,
+    "trail_dist_sigma": 1.0,
+    "sl_update_throttle_sec": 0.2,
+    "max_hold_sec": 60.0,
+    "cooldown_min_sec": 3.0,
+    "cooldown_max_sec": 8.0,
+    "entry_latency_ms": 50,
+    "exit_latency_ms": 50,
+    "taker_fee_bps": 0.0,
+    "maker_fee_bps": 0.0
+  },
+  "risk": {
+    "max_concurrent_positions": 1,
+    "margin_pct_per_slot": 0.99,
+    "leverage_mode": "max",
+    "fixed_leverage": 50,
+    "book_depth_consume_pct": 0.1,
+    "daily_loss_pct_kill": 0.3,
+    "max_drawdown_pct_kill": 0.3,
+    "min_balance_usdt": 5.0
+  },
+  "reference_exchanges": [
+    "binance"
+  ],
+  "paper_starting_balance": 100.0,
+  "zero_fee_symbols": []
+}

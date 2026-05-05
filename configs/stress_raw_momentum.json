@@ -1,0 +1,66 @@
+{
+  "mode": "paper",
+  "autostart": true,
+  "_comment": "STRESS TEST: same raw_momentum as before but with 4s latency + 1bp fees. If it still profits here, edge is real.",
+
+  "mexc_web": { "web_uid": "", "device_id": "", "mhash": "", "proxy": null },
+
+  "universe": {
+    "refresh_sec": 600,
+    "max_symbols": 100,
+    "require_binance_ref": true,
+    "min_book_notional_usdt": 5000,
+    "exclude": [],
+    "include_only": [],
+    "force_include_symbols": ["TAO_USDT", "ARB_USDT", "ASTER_USDT", "ENA_USDT", "AAVE_USDT", "FARTCOIN_USDT", "ETC_USDT", "ICP_USDT", "BTC_USDT", "ETH_USDT", "BCH_USDT", "DOGE_USDT", "POL_USDT"]
+  },
+
+  "strategy": {
+    "algorithm": "raw_momentum",
+    "invert": false,
+    "taker_entry": true,
+
+    "raw_momentum_min_bps": 5.0,
+    "raw_momentum_max_bps": 25.0,
+    "raw_momentum_window_sec": 1.0,
+
+    "min_spread_samples": 30,
+    "min_sigma_bps": 0.3,
+    "min_book_depth_usdt": 5000,
+    "require_ofi_alignment": false,
+
+    "sigma_spread_window_sec": 30.0,
+    "ofi_window_sec": 0.5,
+    "fair_velocity_window_sec": 1.0,
+
+    "hard_sl_margin_pct": 0.02,
+    "hard_sl_pct": 0.0,
+    "breakeven_at_sigma": 1.0,
+    "trail_dist_sigma": 1.0,
+    "sl_update_throttle_sec": 0.5,
+
+    "max_hold_sec": 60.0,
+    "cooldown_min_sec": 3.0,
+    "cooldown_max_sec": 8.0,
+
+    "entry_latency_ms": 4000,
+    "exit_latency_ms": 4000,
+    "taker_fee_bps": 1.0,
+    "maker_fee_bps": 0.0
+  },
+
+  "risk": {
+    "max_concurrent_positions": 5,
+    "margin_pct_per_slot": 0.18,
+    "leverage_mode": "max",
+    "fixed_leverage": 50,
+    "book_depth_consume_pct": 0.05,
+    "daily_loss_pct_kill": 0.5,
+    "max_drawdown_pct_kill": 0.5,
+    "min_balance_usdt": 5.0
+  },
+
+  "reference_exchanges": ["binance"],
+  "paper_starting_balance": 100.0,
+  "zero_fee_symbols": []
+}

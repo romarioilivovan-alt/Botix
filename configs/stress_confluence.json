@@ -1,0 +1,67 @@
+{
+  "mode": "paper",
+  "autostart": true,
+  "_comment": "STRESS TEST: 4-second entry latency + confluence algorithm. Edge must survive worst-case home-network latency.",
+
+  "mexc_web": { "web_uid": "", "device_id": "", "mhash": "", "proxy": null },
+
+  "universe": {
+    "refresh_sec": 600,
+    "max_symbols": 30,
+    "require_binance_ref": true,
+    "min_book_notional_usdt": 5000,
+    "exclude": [],
+    "include_only": ["TAO_USDT", "ARB_USDT", "ASTER_USDT", "ENA_USDT", "AAVE_USDT", "FARTCOIN_USDT", "ETC_USDT", "ICP_USDT", "BTC_USDT", "ETH_USDT", "BCH_USDT", "DOGE_USDT", "POL_USDT"],
+    "force_include_symbols": ["TAO_USDT", "ARB_USDT", "ASTER_USDT", "ENA_USDT", "AAVE_USDT", "FARTCOIN_USDT", "ETC_USDT", "ICP_USDT", "BTC_USDT", "ETH_USDT", "BCH_USDT", "DOGE_USDT", "POL_USDT"]
+  },
+
+  "strategy": {
+    "algorithm": "confluence",
+    "invert": false,
+    "taker_entry": true,
+
+    "confluence_min_velocity_bps": 3.0,
+    "confluence_max_velocity_bps": 20.0,
+    "confluence_min_ofi_usdt": 3000.0,
+    "confluence_min_imbalance_log": 0.5,
+
+    "min_spread_samples": 30,
+    "min_sigma_bps": 0.3,
+    "min_book_depth_usdt": 5000,
+    "require_ofi_alignment": false,
+
+    "sigma_spread_window_sec": 30.0,
+    "ofi_window_sec": 0.5,
+    "fair_velocity_window_sec": 1.0,
+
+    "hard_sl_margin_pct": 0.02,
+    "hard_sl_pct": 0.0,
+    "breakeven_at_sigma": 1.0,
+    "trail_dist_sigma": 1.5,
+    "sl_update_throttle_sec": 0.5,
+
+    "max_hold_sec": 90.0,
+    "cooldown_min_sec": 5.0,
+    "cooldown_max_sec": 15.0,
+
+    "entry_latency_ms": 4000,
+    "exit_latency_ms": 4000,
+    "taker_fee_bps": 1.0,
+    "maker_fee_bps": 0.0
+  },
+
+  "risk": {
+    "max_concurrent_positions": 4,
+    "margin_pct_per_slot": 0.20,
+    "leverage_mode": "max",
+    "fixed_leverage": 50,
+    "book_depth_consume_pct": 0.05,
+    "daily_loss_pct_kill": 0.5,
+    "max_drawdown_pct_kill": 0.5,
+    "min_balance_usdt": 5.0
+  },
+
+  "reference_exchanges": ["binance"],
+  "paper_starting_balance": 100.0,
+  "zero_fee_symbols": []
+}

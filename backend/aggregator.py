@@ -1,0 +1,363 @@
+"""Per-symbol rolling stats aggregator.
+
+Owns books, recent trades, fair value computation and rolling statistics
+(σ_spread, OFI, fair velocity, book depth). Updated on every tick.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Deque, Dict, List, Optional, Tuple
+
+from .state import OrderBook, SymbolStats
+
+
+def _book_imbalance_log(book: OrderBook, levels: int = 5) -> Optional[float]:
+    """log(bid_notional / ask_notional) over top-N levels. Positive = bid-heavy."""
+    bid_n = 0.0
+    ask_n = 0.0
+    for p, q in (book.bids[:levels] if book.bids else []):
+        try:
+            bid_n += float(p) * float(q)
+        except Exception:
+            pass
+    for p, q in (book.asks[:levels] if book.asks else []):
+        try:
+            ask_n += float(p) * float(q)
+        except Exception:
+            pass
+    if bid_n <= 0 or ask_n <= 0:
+        return None
+    return math.log(bid_n / ask_n)
+
+
+def _max_burst_in_window(samples: Deque[Tuple[float, float]], now: float,
+                         window_sec: float = 5.0, bucket_sec: float = 1.0) -> Optional[float]:
+    """Max absolute signed-notional accumulated in any `bucket_sec` slice over `window_sec`.
+
+    Used to detect single-second sweeps. Sign is preserved: a single $50k
+    aggressive-sell second returns -50000.
+    """
+    cutoff = now - window_sec
+    relevant = [(t, v) for (t, v) in samples if t >= cutoff]
+    if not relevant:
+        return None
+    best_signed = 0.0
+    # Slide a 1s window from earliest to latest sample
+    relevant.sort()
+    i = 0
+    bucket_sum = 0.0
+    for j in range(len(relevant)):
+        bucket_sum += relevant[j][1]
+        while i < j and relevant[j][0] - relevant[i][0] > bucket_sec:
+            bucket_sum -= relevant[i][1]
+            i += 1
+        if abs(bucket_sum) > abs(best_signed):
+            best_signed = bucket_sum
+    return best_signed
+
+
+@dataclass
+class _SymbolAgg:
+    mexc_book: OrderBook = field(default_factory=OrderBook)
+    binance_book: OrderBook = field(default_factory=OrderBook)
+
+    # Rolling spread samples (ts, MEXC_mid - F) — limited window
+    spread_samples: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=4000)
+    )
+    # Rolling fair samples (ts, F)
+    fair_samples: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=400)
+    )
+    # Rolling MEXC mid samples for self-reverting strategy
+    mexc_mid_samples: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=2000)
+    )
+    # Rolling Binance trades (ts, signed_notional) — positive = aggressive buy
+    trade_samples: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=2000)
+    )
+    # Rolling MEXC own bid-ask spread in bps (for wide-spread detection)
+    mexc_spread_samples: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=400)
+    )
+
+    # MEXC raw depth merge buffers (incremental updates)
+    mexc_bids_map: Dict[float, float] = field(default_factory=dict)
+    mexc_asks_map: Dict[float, float] = field(default_factory=dict)
+
+
+class Aggregator:
+    def __init__(self, cfg) -> None:
+        self.cfg = cfg
+        self._symbols: Dict[str, _SymbolAgg] = {}
+        self._binance_to_mexc: Dict[str, str] = {}
+        self._price_factors: Dict[str, float] = {}  # mexc_symbol -> factor
+
+    def reset(self) -> None:
+        self._symbols.clear()
+        self._binance_to_mexc.clear()
+
+    def configure_symbols(self, mexc_to_binance: Dict[str, Optional[str]],
+                           price_factors: Optional[Dict[str, float]] = None) -> None:
+        """Register working set and reverse map."""
+        self._binance_to_mexc = {
+            v: k for k, v in mexc_to_binance.items() if v
+        }
+        self._price_factors: Dict[str, float] = price_factors or {}
+        # ensure agg objects exist for working set
+        for mexc in mexc_to_binance:
+            self._symbols.setdefault(mexc, _SymbolAgg())
+        # drop stale
+        for old in list(self._symbols.keys()):
+            if old not in mexc_to_binance:
+                self._symbols.pop(old, None)
+
+    def symbols(self) -> List[str]:
+        return list(self._symbols.keys())
+
+    def get_book(self, mexc_symbol: str) -> Optional[OrderBook]:
+        a = self._symbols.get(mexc_symbol)
+        if not a:
+            return None
+        return a.mexc_book
+
+    def get_binance_book(self, mexc_symbol: str) -> Optional[OrderBook]:
+        a = self._symbols.get(mexc_symbol)
+        if not a:
+            return None
+        return a.binance_book
+
+    # ---------- ingest callbacks ----------
+
+    def on_binance_depth(self, binance_symbol: str, bids: list, asks: list, ts: float) -> None:
+        mexc = self._binance_to_mexc.get(binance_symbol)
+        if not mexc:
+            return
+        agg = self._symbols.get(mexc)
+        if not agg:
+            return
+        factor = self._price_factors.get(mexc, 1.0)
+        try:
+            b = [[float(p) * factor, float(q)] for p, q in bids if float(q) > 0][:20]
+            a = [[float(p) * factor, float(q)] for p, q in asks if float(q) > 0][:20]
+        except Exception:
+            return
+        agg.binance_book = OrderBook(bids=b, asks=a, ts=ts)
+
+        mid = agg.binance_book.mid
+        if mid is not None:
+            agg.fair_samples.append((ts, mid))
+            self._update_spread_sample(mexc, ts)
+
+    def on_binance_trade(
+        self,
+        binance_symbol: str,
+        price: float,
+        qty: float,
+        buyer_is_maker: bool,
+        ts: float,
+    ) -> None:
+        mexc = self._binance_to_mexc.get(binance_symbol)
+        if not mexc:
+            return
+        agg = self._symbols.get(mexc)
+        if not agg:
+            return
+        # buyer_is_maker == True means a market SELL hit the bid (aggressive sell)
+        sign = -1.0 if buyer_is_maker else 1.0
+        notional = price * qty
+        agg.trade_samples.append((ts, sign * notional))
+
+    def on_mexc_depth(self, mexc_symbol: str, bids: list, asks: list, ts: float) -> None:
+        agg = self._symbols.get(mexc_symbol)
+        if not agg:
+            return
+        # MEXC depth is incremental: q==0 means delete
+        for it in bids or []:
+            try:
+                p = float(it[0])
+                q = float(it[1])
+            except Exception:
+                continue
+            if q <= 0:
+                agg.mexc_bids_map.pop(p, None)
+            else:
+                agg.mexc_bids_map[p] = q
+        for it in asks or []:
+            try:
+                p = float(it[0])
+                q = float(it[1])
+            except Exception:
+                continue
+            if q <= 0:
+                agg.mexc_asks_map.pop(p, None)
+            else:
+                agg.mexc_asks_map[p] = q
+
+        # snapshot top
+        if agg.mexc_bids_map:
+            sorted_bids = sorted(agg.mexc_bids_map.items(), key=lambda x: -x[0])
+        else:
+            sorted_bids = []
+        if agg.mexc_asks_map:
+            sorted_asks = sorted(agg.mexc_asks_map.items(), key=lambda x: x[0])
+        else:
+            sorted_asks = []
+
+        agg.mexc_book = OrderBook(
+            bids=[[p, q] for p, q in sorted_bids[:50]],
+            asks=[[p, q] for p, q in sorted_asks[:50]],
+            ts=ts,
+        )
+        # Track own MEXC mid for Bollinger-band self-reverting strategy
+        m_mid = agg.mexc_book.mid
+        if m_mid is not None and m_mid > 0:
+            agg.mexc_mid_samples.append((ts, m_mid))
+        self._update_spread_sample(mexc_symbol, ts)
+
+        # Track MEXC own spread (bps) for wide-spread detection
+        bb = agg.mexc_book.best_bid
+        ba = agg.mexc_book.best_ask
+        if bb and ba and ba > bb > 0:
+            mid = (bb + ba) / 2.0
+            sp_bps = (ba - bb) / mid * 1e4
+            agg.mexc_spread_samples.append((ts, sp_bps))
+
+    # ---------- compute ----------
+
+    def _update_spread_sample(self, mexc_symbol: str, ts: float) -> None:
+        agg = self._symbols.get(mexc_symbol)
+        if not agg:
+            return
+        m_mid = agg.mexc_book.mid
+        b_mid = agg.binance_book.mid
+        if m_mid is None or b_mid is None:
+            return
+        agg.spread_samples.append((ts, m_mid - b_mid))
+
+    def compute_stats(self, mexc_symbol: str) -> SymbolStats:
+        agg = self._symbols.get(mexc_symbol)
+        st = SymbolStats()
+        if not agg:
+            return st
+
+        now = time.time()
+        st.last_update_ts = now
+
+        st.fair = agg.binance_book.mid
+        st.mexc_mid = agg.mexc_book.mid
+
+        if st.fair is None or st.mexc_mid is None:
+            return st
+
+        spread = st.mexc_mid - st.fair
+        st.spread = spread
+        st.spread_bps = spread / st.fair * 1e4 if st.fair > 0 else None
+
+        # σ over rolling window
+        win = float(self.cfg.strategy.sigma_spread_window_sec)
+        cutoff = now - win
+        samples = [v for ts_s, v in agg.spread_samples if ts_s >= cutoff]
+        min_samples = int(getattr(self.cfg.strategy, "min_spread_samples", 60))
+        min_sigma_bps = float(getattr(self.cfg.strategy, "min_sigma_bps", 0.3))
+        if len(samples) >= min_samples:
+            mean = sum(samples) / len(samples)
+            var = sum((x - mean) ** 2 for x in samples) / len(samples)
+            sigma = math.sqrt(var) if var > 0 else 0.0
+            st.sigma_spread = sigma
+            # Reject z computation when σ is unrealistically small (warm-up artifact)
+            min_sigma = (st.fair or 0.0) * (min_sigma_bps / 1e4)
+            if sigma > 0 and sigma >= min_sigma:
+                st.z_score = spread / sigma
+
+        # OFI
+        ofi_win = float(self.cfg.strategy.ofi_window_sec)
+        ofi_cut = now - ofi_win
+        ofi = sum(v for ts_s, v in agg.trade_samples if ts_s >= ofi_cut)
+        st.ofi = ofi
+
+        # Fair velocity (bps/sec) using fair samples in a window
+        fv_win = float(self.cfg.strategy.fair_velocity_window_sec)
+        fv_cut = now - fv_win
+        fs = [(t, p) for t, p in agg.fair_samples if t >= fv_cut]
+        if len(fs) >= 2:
+            t0, p0 = fs[0]
+            t1, p1 = fs[-1]
+            dt = max(1e-3, t1 - t0)
+            if p0 > 0:
+                st.fair_velocity_bps_per_sec = (p1 - p0) / p0 * 1e4 / dt
+
+        # Multi-timeframe velocity for trend filters (5s and 30s windows)
+        for win, target_attr in ((5.0, "fair_velocity_5s_bps"),
+                                  (30.0, "fair_velocity_30s_bps")):
+            cut = now - win
+            samples = [(t, p) for t, p in agg.fair_samples if t >= cut]
+            if len(samples) >= 2:
+                t0, p0 = samples[0]
+                t1, p1 = samples[-1]
+                dt = max(1e-3, t1 - t0)
+                if p0 > 0:
+                    setattr(st, target_attr, (p1 - p0) / p0 * 1e4 / dt)
+
+        # Book top notional
+        st.mexc_book_top10_notional = agg.mexc_book.top_notional(10)
+
+        # Top-5 book imbalance on MEXC (microstructure signal)
+        st.mexc_book_imbalance = _book_imbalance_log(agg.mexc_book, levels=5)
+
+        # Current MEXC spread + 30s rolling avg
+        bb = agg.mexc_book.best_bid
+        ba = agg.mexc_book.best_ask
+        if bb and ba and ba > bb > 0:
+            mid = (bb + ba) / 2.0
+            st.mexc_spread_bps = (ba - bb) / mid * 1e4
+            avg_cut = now - 30.0
+            avg_samples = [v for ts_s, v in agg.mexc_spread_samples if ts_s >= avg_cut]
+            if avg_samples:
+                st.mexc_spread_bps_avg = sum(avg_samples) / len(avg_samples)
+
+        # Binance burst detector
+        st.binance_burst_usdt_1s = _max_burst_in_window(
+            agg.trade_samples, now, window_sec=5.0, bucket_sec=1.0
+        )
+
+        # MEXC own-price Bollinger over 60-second window
+        bb_win = 60.0
+        bb_cut = now - bb_win
+        bb_samples = [p for t_s, p in agg.mexc_mid_samples if t_s >= bb_cut]
+        if len(bb_samples) >= 30:
+            mean = sum(bb_samples) / len(bb_samples)
+            var = sum((x - mean) ** 2 for x in bb_samples) / len(bb_samples)
+            std = math.sqrt(var) if var > 0 else 0.0
+            st.mexc_mid_mean_60s = mean
+            st.mexc_mid_std_60s = std
+            if std > 0 and st.mexc_mid is not None:
+                st.mexc_mid_z_60s = (st.mexc_mid - mean) / std
+
+        return st
+
+    def cleanup_old_samples(self) -> None:
+        """Trim sample buffers occasionally to bound memory."""
+        now = time.time()
+        spread_cut = now - max(60.0, self.cfg.strategy.sigma_spread_window_sec * 2)
+        ofi_cut = now - max(5.0, self.cfg.strategy.ofi_window_sec * 4)
+        fair_cut = now - max(5.0, self.cfg.strategy.fair_velocity_window_sec * 4)
+        mexc_spread_cut = now - 60.0
+
+        for agg in self._symbols.values():
+            while agg.spread_samples and agg.spread_samples[0][0] < spread_cut:
+                agg.spread_samples.popleft()
+            while agg.trade_samples and agg.trade_samples[0][0] < ofi_cut:
+                agg.trade_samples.popleft()
+            while agg.fair_samples and agg.fair_samples[0][0] < fair_cut:
+                agg.fair_samples.popleft()
+            while agg.mexc_spread_samples and agg.mexc_spread_samples[0][0] < mexc_spread_cut:
+                agg.mexc_spread_samples.popleft()
+            mexc_mid_cut = now - 90.0
+            while agg.mexc_mid_samples and agg.mexc_mid_samples[0][0] < mexc_mid_cut:
+                agg.mexc_mid_samples.popleft()

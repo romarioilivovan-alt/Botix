@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local config and runtime
+*.log
+.universe_cache.json
+uvicorn.out
+uvicorn.err
+
+# NOTE: data.sqlite is intentionally NOT ignored — the remote analysis agent
+# needs it. If it grows too large later we can switch to git LFS or
+# split into per-day SQLite files.
+
+# Don't commit secrets-bearing config (it's user-specific)
+# Track config.example.json instead.
+config.json
