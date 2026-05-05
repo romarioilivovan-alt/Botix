@@ -37,6 +37,12 @@
       </div>
     </header>
 
+    <nav class="main-tabs">
+      <button class="main-tab-btn active" onclick="showTab('dashboard')">Dashboard</button>
+      <button class="main-tab-btn" onclick="showTab('symbols')">Symbols</button>
+    </nav>
+
+    <div id="panel-dashboard" class="panel-wrap">
     <main class="grid">
       <section class="card stats">
         <div class="card-h"><div class="h">Equity</div><div class="hint" id="equityHint">-</div></div>
@@ -158,6 +164,18 @@
         </div>
       </section>
     </main>
+    </div><!-- end panel-dashboard -->
+
+    <div id="panel-symbols" class="panel-wrap" style="display:none">
+      <div class="card" style="margin:12px">
+        <div class="card-h">
+          <div class="h">Symbol Configuration</div>
+          <button class="btn btn-primary" onclick="saveSymbolOverrides()">Save</button>
+        </div>
+        <div id="symbols-table-container">Loading...</div>
+      </div>
+    </div><!-- end panel-symbols -->
+
   </div>
 
   <script src="/static/app.js"></script>

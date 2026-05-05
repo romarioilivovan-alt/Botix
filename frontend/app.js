@@ -1,6 +1,22 @@
 // ============== helpers ==============
 const $ = (id) => document.getElementById(id);
 
+// ============== tab switching ==============
+function showTab(name) {
+  // Hide all panel wraps
+  document.querySelectorAll('.panel-wrap').forEach(el => { el.style.display = 'none'; });
+  // Deactivate all main tab buttons
+  document.querySelectorAll('.main-tab-btn').forEach(btn => { btn.classList.remove('active'); });
+  // Show selected panel
+  const panel = document.getElementById('panel-' + name);
+  if (panel) panel.style.display = '';
+  // Activate selected tab button
+  document.querySelectorAll('.main-tab-btn').forEach(btn => {
+    if (btn.getAttribute('onclick') === "showTab('" + name + "')") btn.classList.add('active');
+  });
+  if (name === 'symbols') loadSymbolOverrides();
+}
+
 async function api(url, method = 'GET', body = null) {
   const opt = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opt.body = JSON.stringify(body);
@@ -344,3 +360,99 @@ window.addEventListener('DOMContentLoaded', async () => {
     } catch {}
   }, 3000);
 });
+
+// ---- Symbols Tab ----
+const ALL_ALGOS = ["meanrev","raw_momentum","ofi","confluence","imbalance","sweep","wide_spread","book_lean","bb_revert"];
+const ALL_MODES = ["ANY","BEST","CONSENSUS"];
+let symbolOverrides = [];
+
+async function loadSymbolOverrides() {
+  try {
+    const res = await fetch('/api/symbol-overrides');
+    const data = await res.json();
+    symbolOverrides = data.items || [];
+  } catch(e) {
+    symbolOverrides = [];
+  }
+  renderSymbolsTab();
+}
+
+function renderSymbolsTab() {
+  const container = document.getElementById('symbols-table-container');
+  if (!container) return;
+  if (!symbolOverrides.length) { container.innerHTML = '<div style="color:#888;padding:16px">No overrides loaded.</div>'; return; }
+
+  const isStock = sym => ["NVDA_USDT","MSTR_USDT","TSLA_USDT","INTC_USDT"].includes(sym);
+
+  container.innerHTML = symbolOverrides.map((ov, idx) => {
+    const typeClass = isStock(ov.symbol) ? 'type-s' : 'type-c';
+    const typeName = isStock(ov.symbol) ? 'stock' : 'crypto';
+    const activeAlgos = new Set(ov.algorithms || []);
+    const pills = ALL_ALGOS.map(algo =>
+      `<span class="algo-pill${activeAlgos.has(algo) ? ' active' : ''}" onclick="toggleAlgo(${idx},'${algo}')">${algo}</span>`
+    ).join('');
+    const modeOpts = ALL_MODES.map(m =>
+      `<option value="${m}"${(ov.algo_mode||'ANY')===m?' selected':''}>${m}</option>`
+    ).join('');
+    const defaultSl = isStock(ov.symbol) ? 0.10 : 0.25;
+    const slVal = ov.sl_pct != null ? (ov.sl_pct*100).toFixed(2) : defaultSl.toFixed(2);
+    return `<div class="sym-row">
+      <span class="sym-name">${ov.symbol.replace('_USDT','')}</span>
+      <span class="sym-type ${typeClass}">${typeName}</span>
+      <button class="sym-toggle ${ov.enabled ? 'toggle-on':'toggle-off'}" onclick="toggleSymEnabled(${idx})">${ov.enabled?'ON':'OFF'}</button>
+      <label class="sym-label">Lev<input class="sym-input" type="number" value="${ov.leverage||100}" min="1" max="200" onchange="setField(${idx},'leverage',+this.value)"></label>
+      <label class="sym-label">M%<input class="sym-input" type="number" value="${((ov.margin_pct||0.25)*100).toFixed(0)}" min="5" max="100" onchange="setField(${idx},'margin_pct',+this.value/100)"></label>
+      <label class="sym-label">SL%<input class="sym-input" type="number" step="0.01" value="${slVal}" min="0.01" max="2" onchange="setField(${idx},'sl_pct',+this.value/100)"></label>
+      <select style="background:#1a1a24;border:1px solid #2a2a3a;color:#e0e0e0;padding:3px 6px;border-radius:6px;font-size:12px" onchange="setField(${idx},'algo_mode',this.value)">${modeOpts}</select>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:2px">${pills}</div>
+    </div>`;
+  }).join('');
+}
+
+function toggleSymEnabled(idx) {
+  symbolOverrides[idx].enabled = !symbolOverrides[idx].enabled;
+  renderSymbolsTab();
+}
+
+function toggleAlgo(idx, algo) {
+  const ov = symbolOverrides[idx];
+  if (!Array.isArray(ov.algorithms)) ov.algorithms = [];
+  const i = ov.algorithms.indexOf(algo);
+  if (i >= 0) ov.algorithms.splice(i, 1);
+  else ov.algorithms.push(algo);
+  renderSymbolsTab();
+}
+
+function setField(idx, field, value) {
+  symbolOverrides[idx][field] = value;
+}
+
+async function saveSymbolOverrides() {
+  try {
+    const res = await fetch('/api/symbol-overrides', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({items: symbolOverrides})
+    });
+    const data = await res.json();
+    if (data.success) showToast('Symbols saved ✓');
+    else showToast('Save failed: ' + (data.message||'unknown error'));
+  } catch(e) {
+    showToast('Save error: ' + e.message);
+  }
+}
+
+function showToast(msg) {
+  let el = document.getElementById('ff-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'ff-toast';
+    el.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#4caf50;color:#fff;padding:10px 18px;border-radius:8px;font-size:13px;z-index:9999;opacity:0;transition:opacity .3s;pointer-events:none';
+    document.body.appendChild(el);
+  }
+  el.style.background = msg.includes('failed')||msg.includes('error') ? '#ff5252' : '#4caf50';
+  el.textContent = msg;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 2500);
+}
