@@ -144,7 +144,7 @@ class SymbolOverride:
     leverage: Optional[int] = None
     margin_pct: Optional[float] = None
     sl_pct: Optional[float] = None
-    max_hold_sec: Optional[int] = None
+    max_hold_sec: Optional[float] = None
     algorithms: Optional[List[str]] = None  # None = use global
     algo_mode: Optional[str] = None         # None = use global
 
