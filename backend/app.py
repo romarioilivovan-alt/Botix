@@ -202,8 +202,7 @@ async def api_mode(payload: Dict[str, Any]) -> JSONResponse:
 
 @app.get("/api/symbol-overrides")
 async def api_symbol_overrides_get() -> JSONResponse:
-    from dataclasses import asdict as _asdict
-    return JSONResponse({"items": [_asdict(ov) for ov in (cfg.symbol_overrides or [])]})
+    return JSONResponse({"items": [asdict(ov) for ov in (cfg.symbol_overrides or [])]})
 
 
 @app.post("/api/symbol-overrides")
@@ -215,7 +214,7 @@ async def api_symbol_overrides_save(payload: Dict[str, Any]) -> JSONResponse:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        sym = str(item.get("symbol") or "")
+        sym = str(item.get("symbol") or "").upper().strip()
         if not sym:
             continue
         ov = SymbolOverride(symbol=sym)
