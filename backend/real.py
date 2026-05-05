@@ -199,11 +199,19 @@ class RealExecutor:
         lev_max = await self._max_leverage(sym)
         depth = book.top_notional(10)
 
+        # Per-symbol sizing overrides
+        _ov = None
+        for _o in (self.cfg.symbol_overrides or []):
+            if _o.symbol == sym:
+                _ov = _o
+                break
         decision = self.alloc.decide(
             opp, self.state,
             balance_free=self._free_balance(),
             max_leverage_for_symbol=lev_max,
             book_top_notional=depth,
+            margin_pct_override=(_ov.margin_pct if _ov else None),
+            leverage_override=(_ov.leverage if _ov else None),
         )
         if not decision.accept:
             return
