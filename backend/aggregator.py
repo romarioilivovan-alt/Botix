@@ -252,6 +252,12 @@ class Aggregator:
         st.fair = agg.binance_book.mid
         st.mexc_mid = agg.mexc_book.mid
 
+        # DEBUG: Log price source for stocks
+        if mexc_symbol in ['NVDA_USDT', 'MSTR_USDT', 'TSLA_USDT', 'INTC_USDT']:
+            binance_ref = self._binance_to_mexc.get(mexc_symbol)
+            logger.info(f"[STOCK_PRICE_DEBUG] {mexc_symbol}: fair={st.fair}, mexc_mid={st.mexc_mid}, "
+                       f"binance_ref={binance_ref}, has_binance_book={agg.binance_book.mid is not None}")
+
         if st.fair is None or st.mexc_mid is None:
             return st
 

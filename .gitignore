@@ -20,8 +20,12 @@ Thumbs.db
 # Local config and runtime
 *.log
 .universe_cache.json
+.universe_cache.*.json
 uvicorn.out
 uvicorn.err
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
 
 # NOTE: data.sqlite is intentionally NOT ignored — the remote analysis agent
 # needs it. If it grows too large later we can switch to git LFS or
