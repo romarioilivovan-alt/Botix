@@ -519,6 +519,34 @@ class RealExecutor:
         except Exception:
             pass
 
+    def _log_latency_probe(
+        self,
+        symbol: str,
+        *,
+        binance_depth_age_ms: Optional[float] = None,
+        mexc_depth_age_ms: Optional[float] = None,
+        stats_compute_ms: Optional[float] = None,
+        decision_ms: Optional[float] = None,
+        submit_latency_ms: Optional[float] = None,
+        fill_latency_ms: Optional[float] = None,
+    ) -> None:
+        """Log latency measurements to persistence for performance analysis."""
+        try:
+            import asyncio
+            asyncio.create_task(
+                self.state.store.log_latency_probe(
+                    symbol=symbol,
+                    binance_depth_age_ms=binance_depth_age_ms,
+                    mexc_depth_age_ms=mexc_depth_age_ms,
+                    stats_compute_ms=stats_compute_ms,
+                    decision_ms=decision_ms,
+                    submit_latency_ms=submit_latency_ms,
+                    fill_latency_ms=fill_latency_ms,
+                )
+            )
+        except Exception:
+            pass
+
     def _fill_respects_fair(
         self,
         symbol: str,
@@ -635,9 +663,18 @@ class RealExecutor:
         if sym in self.state.positions:
             return
 
+        # Latency probe: measure book ages and decision time
+        t_decision_start = time.perf_counter()
+
         book = self.agg.get_book(sym)
         if not book or book.best_bid is None or book.best_ask is None:
             return
+
+        # Measure book ages
+        now = time.time()
+        mexc_depth_age_ms = (now - book.ts) * 1000.0 if book.ts > 0 else None
+        binance_book = self.agg.get_binance_book(sym)
+        binance_depth_age_ms = (now - binance_book.ts) * 1000.0 if binance_book and binance_book.ts > 0 else None
 
         # Optional 0-fee live check (the symbol can lose its zero-fee status).
         require_zero_fee = bool(getattr(self.cfg.strategy, "real_require_zero_fee", False))
@@ -647,7 +684,6 @@ class RealExecutor:
             except Exception:
                 zero = False
             if not zero:
-                now = time.time()
                 last = float(self._zero_fee_skip_log_ts.get(sym, 0.0) or 0.0)
                 if now - last >= 30.0:
                     self._zero_fee_skip_log_ts[sym] = now
@@ -762,6 +798,18 @@ class RealExecutor:
             spread_bps_at_quote=spread_bps_at_quote,
         )
         self._quotes[sym] = q
+
+        # Latency probe: log decision time and submit latency
+        decision_ms = (time.perf_counter() - t_decision_start) * 1000.0
+        submit_latency_ms = (time.time() - opp.signal_ts) * 1000.0 if opp.signal_ts > 0 else None
+        self._log_latency_probe(
+            sym,
+            binance_depth_age_ms=binance_depth_age_ms,
+            mexc_depth_age_ms=mexc_depth_age_ms,
+            decision_ms=decision_ms,
+            submit_latency_ms=submit_latency_ms,
+        )
+
         await self.state.add_log(
             "info",
             f"[real] {'ioc' if taker_entry else 'quote'} {sym} {opp.side} @ {price:.6g} "

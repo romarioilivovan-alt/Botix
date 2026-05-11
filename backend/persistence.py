@@ -91,6 +91,19 @@ CREATE TABLE IF NOT EXISTS signal_decisions (
 
 CREATE INDEX IF NOT EXISTS idx_signal_decisions_ts ON signal_decisions(ts);
 CREATE INDEX IF NOT EXISTS idx_signal_decisions_symbol ON signal_decisions(symbol);
+
+CREATE TABLE IF NOT EXISTS latency_probe (
+    ts REAL NOT NULL,
+    symbol TEXT NOT NULL,
+    binance_depth_age_ms REAL,
+    mexc_depth_age_ms REAL,
+    stats_compute_ms REAL,
+    decision_ms REAL,
+    submit_latency_ms REAL,
+    fill_latency_ms REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_latency_probe_ts ON latency_probe(ts);
 """
 
 
@@ -336,6 +349,41 @@ class Store:
                     decision,
                     reason,
                     age_ms,
+                ),
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+
+    async def log_latency_probe(
+        self,
+        symbol: str,
+        *,
+        binance_depth_age_ms: Optional[float] = None,
+        mexc_depth_age_ms: Optional[float] = None,
+        stats_compute_ms: Optional[float] = None,
+        decision_ms: Optional[float] = None,
+        submit_latency_ms: Optional[float] = None,
+        fill_latency_ms: Optional[float] = None,
+    ) -> None:
+        """Log latency measurements for performance analysis."""
+        if not self._db:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO latency_probe
+                   (ts, symbol, binance_depth_age_ms, mexc_depth_age_ms, stats_compute_ms,
+                    decision_ms, submit_latency_ms, fill_latency_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    time.time(),
+                    symbol,
+                    binance_depth_age_ms,
+                    mexc_depth_age_ms,
+                    stats_compute_ms,
+                    decision_ms,
+                    submit_latency_ms,
+                    fill_latency_ms,
                 ),
             )
             await self._db.commit()
