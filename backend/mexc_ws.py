@@ -34,6 +34,9 @@ class MexcMultiWS:
         self._ws_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._connected = False
+        self._last_msg_ts: float = 0.0
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
 
     @property
     def is_connected(self) -> bool:
@@ -92,6 +95,12 @@ class MexcMultiWS:
         self._desired = set(initial)
         self._stop.clear()
 
+        # Start watchdog and heartbeat tasks
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._stall_watchdog())
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -105,22 +114,16 @@ class MexcMultiWS:
                     self._ws = ws
                     self._connected = True
                     self._subscribed.clear()
+                    self._last_msg_ts = time.time()
                     backoff = 1.0
                     # subscribe to all desired
                     for sym in list(self._desired):
                         await self._sub(sym)
 
-                    last_ping = time.time()
                     async for raw in ws:
+                        self._last_msg_ts = time.time()
                         if self._stop.is_set():
                             break
-                        now = time.time()
-                        if now - last_ping > 15:
-                            last_ping = now
-                            try:
-                                await ws.send(json.dumps({"method": "ping"}))
-                            except Exception:
-                                pass
                         try:
                             msg = json.loads(raw)
                         except Exception:
@@ -131,7 +134,7 @@ class MexcMultiWS:
                             bids = payload.get("bids") or payload.get("b") or []
                             asks = payload.get("asks") or payload.get("a") or []
                             try:
-                                await self.on_depth(sym, bids, asks, now)
+                                await self.on_depth(sym, bids, asks, time.time())
                             except Exception as e:
                                 logger.warning("mexc on_depth %s error: %s", sym, e)
             except Exception as e:
@@ -144,3 +147,27 @@ class MexcMultiWS:
                 break
             await asyncio.sleep(backoff)
             backoff = min(backoff * 1.7, 10.0)
+
+    async def _stall_watchdog(self) -> None:
+        """Monitor for stalled connection and force reconnect if no messages for 10s."""
+        while not self._stop.is_set():
+            await asyncio.sleep(5.0)
+            if self._ws is not None and self._last_msg_ts > 0:
+                silence = time.time() - self._last_msg_ts
+                if silence > 10.0:
+                    logger.warning("MEXC WS stalled (%.1fs no msg), forcing reconnect", silence)
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
+
+    async def _heartbeat_loop(self) -> None:
+        """Send ping every 15s independently of incoming message flow."""
+        while not self._stop.is_set():
+            await asyncio.sleep(15.0)
+            async with self._ws_lock:
+                if self._ws is not None:
+                    try:
+                        await self._ws.send(json.dumps({"method": "ping"}))
+                    except Exception:
+                        pass

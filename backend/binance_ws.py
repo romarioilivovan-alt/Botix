@@ -48,6 +48,8 @@ class BinanceMultiWS:
         self._reqid = 0
         self._connected = False
         self._task: Optional[asyncio.Task] = None
+        self._last_msg_ts: float = 0.0
+        self._watchdog_task: Optional[asyncio.Task] = None
 
     @property
     def is_connected(self) -> bool:
@@ -99,6 +101,10 @@ class BinanceMultiWS:
         self._desired = set(s.upper() for s in initial)
         self._stop.clear()
 
+        # Start watchdog task
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._stall_watchdog())
+
         backoff = 1.0
         while not self._stop.is_set():
             try:
@@ -124,6 +130,7 @@ class BinanceMultiWS:
                 ) as ws:
                     self._ws = ws
                     self._connected = True
+                    self._last_msg_ts = time.time()
                     backoff = 1.0
                     if rest:
                         await self._send_subscribe(
@@ -131,6 +138,7 @@ class BinanceMultiWS:
                         )
 
                     async for raw in ws:
+                        self._last_msg_ts = time.time()
                         if self._stop.is_set():
                             break
                         try:
@@ -186,6 +194,19 @@ class BinanceMultiWS:
                 await self.on_trade(sym_u, price, qty, buyer_is_maker, ts)
             except Exception as e:
                 logger.warning("on_trade %s error: %s", sym_u, e)
+
+    async def _stall_watchdog(self) -> None:
+        """Monitor for stalled connection and force reconnect if no messages for 10s."""
+        while not self._stop.is_set():
+            await asyncio.sleep(5.0)
+            if self._ws is not None and self._last_msg_ts > 0:
+                silence = time.time() - self._last_msg_ts
+                if silence > 10.0:
+                    logger.warning("Binance WS stalled (%.1fs no msg), forcing reconnect", silence)
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
 
 
 def rest_to_symbols(streams: List[str]) -> List[str]:
