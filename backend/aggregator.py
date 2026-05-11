@@ -6,6 +6,7 @@ Owns books, recent trades, fair value computation and rolling statistics
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections import deque
@@ -14,19 +15,30 @@ from typing import Deque, Dict, List, Optional, Tuple
 
 from .state import OrderBook, SymbolStats
 
+logger = logging.getLogger(__name__)
 
-def _book_imbalance_log(book: OrderBook, levels: int = 5) -> Optional[float]:
+STOCK_SYMBOLS = frozenset({
+    "NVIDIA_USDT",
+    "MSTRSTOCK_USDT",
+    "TSLA_USDT",
+    "INTC_USDT",
+    "NVDA_USDT",
+    "MSTR_USDT",
+})
+
+
+def _book_imbalance_log(book: OrderBook, levels: int = 5, contract_size: float = 1.0) -> Optional[float]:
     """log(bid_notional / ask_notional) over top-N levels. Positive = bid-heavy."""
     bid_n = 0.0
     ask_n = 0.0
     for p, q in (book.bids[:levels] if book.bids else []):
         try:
-            bid_n += float(p) * float(q)
+            bid_n += float(p) * float(q) * float(contract_size)
         except Exception:
             pass
     for p, q in (book.asks[:levels] if book.asks else []):
         try:
-            ask_n += float(p) * float(q)
+            ask_n += float(p) * float(q) * float(contract_size)
         except Exception:
             pass
     if bid_n <= 0 or ask_n <= 0:
@@ -86,7 +98,9 @@ class _SymbolAgg:
         default_factory=lambda: deque(maxlen=400)
     )
 
-    # MEXC raw depth merge buffers (incremental updates)
+    # MEXC raw depth buffers. The websocket client now subscribes to
+    # `sub.depth.full`, so every push is treated as a fresh top-of-book
+    # snapshot replacement rather than an incremental delta stream.
     mexc_bids_map: Dict[float, float] = field(default_factory=dict)
     mexc_asks_map: Dict[float, float] = field(default_factory=dict)
 
@@ -97,18 +111,22 @@ class Aggregator:
         self._symbols: Dict[str, _SymbolAgg] = {}
         self._binance_to_mexc: Dict[str, str] = {}
         self._price_factors: Dict[str, float] = {}  # mexc_symbol -> factor
+        self._contract_sizes: Dict[str, float] = {}  # mexc_symbol -> base units per contract
 
     def reset(self) -> None:
         self._symbols.clear()
         self._binance_to_mexc.clear()
+        self._contract_sizes.clear()
 
     def configure_symbols(self, mexc_to_binance: Dict[str, Optional[str]],
-                           price_factors: Optional[Dict[str, float]] = None) -> None:
+                           price_factors: Optional[Dict[str, float]] = None,
+                           contract_sizes: Optional[Dict[str, float]] = None) -> None:
         """Register working set and reverse map."""
         self._binance_to_mexc = {
             v: k for k, v in mexc_to_binance.items() if v
         }
         self._price_factors: Dict[str, float] = price_factors or {}
+        self._contract_sizes = contract_sizes or {}
         # ensure agg objects exist for working set
         for mexc in mexc_to_binance:
             self._symbols.setdefault(mexc, _SymbolAgg())
@@ -131,6 +149,13 @@ class Aggregator:
         if not a:
             return None
         return a.binance_book
+
+    @property
+    def contract_sizes(self) -> Dict[str, float]:
+        return self._contract_sizes
+
+    def contract_size_for(self, mexc_symbol: str) -> float:
+        return float(self._contract_sizes.get(mexc_symbol, 1.0) or 1.0)
 
     # ---------- ingest callbacks ----------
 
@@ -177,27 +202,29 @@ class Aggregator:
         agg = self._symbols.get(mexc_symbol)
         if not agg:
             return
-        # MEXC depth is incremental: q==0 means delete
+        # `sub.depth.full` sends full top-N snapshots. Replace the local book
+        # every push so stale levels cannot survive across updates.
+        next_bids: Dict[float, float] = {}
         for it in bids or []:
             try:
                 p = float(it[0])
                 q = float(it[1])
             except Exception:
                 continue
-            if q <= 0:
-                agg.mexc_bids_map.pop(p, None)
-            else:
-                agg.mexc_bids_map[p] = q
+            if q > 0:
+                next_bids[p] = q
+        next_asks: Dict[float, float] = {}
         for it in asks or []:
             try:
                 p = float(it[0])
                 q = float(it[1])
             except Exception:
                 continue
-            if q <= 0:
-                agg.mexc_asks_map.pop(p, None)
-            else:
-                agg.mexc_asks_map[p] = q
+            if q > 0:
+                next_asks[p] = q
+
+        agg.mexc_bids_map = next_bids
+        agg.mexc_asks_map = next_asks
 
         # snapshot top
         if agg.mexc_bids_map:
@@ -245,25 +272,47 @@ class Aggregator:
         st = SymbolStats()
         if not agg:
             return st
+        contract_size = self.contract_size_for(mexc_symbol)
 
         now = time.time()
         st.last_update_ts = now
+        if getattr(agg.mexc_book, "ts", 0.0) > 0:
+            st.mexc_book_age_ms = max(0.0, (now - float(agg.mexc_book.ts)) * 1000.0)
+        if getattr(agg.binance_book, "ts", 0.0) > 0:
+            st.binance_book_age_ms = max(0.0, (now - float(agg.binance_book.ts)) * 1000.0)
 
-        st.fair = agg.binance_book.mid
         st.mexc_mid = agg.mexc_book.mid
 
-        # DEBUG: Log price source for stocks
-        if mexc_symbol in ['NVDA_USDT', 'MSTR_USDT', 'TSLA_USDT', 'INTC_USDT']:
-            binance_ref = self._binance_to_mexc.get(mexc_symbol)
-            logger.info(f"[STOCK_PRICE_DEBUG] {mexc_symbol}: fair={st.fair}, mexc_mid={st.mexc_mid}, "
-                       f"binance_ref={binance_ref}, has_binance_book={agg.binance_book.mid is not None}")
+        # For stocks without Binance reference, use MEXC price as fair
+        is_stock = mexc_symbol in STOCK_SYMBOLS
+        if is_stock and agg.binance_book.mid is None:
+            # Use MEXC price as fair for stocks (no Binance reference available)
+            st.fair = st.mexc_mid
+            logger.info(f"[STOCK] {mexc_symbol}: Using MEXC price as fair (no Binance ref): {st.fair}")
+        else:
+            # Normal case: use Binance as fair reference
+            st.fair = agg.binance_book.mid
 
         if st.fair is None or st.mexc_mid is None:
             return st
 
-        spread = st.mexc_mid - st.fair
-        st.spread = spread
-        st.spread_bps = spread / st.fair * 1e4 if st.fair > 0 else None
+        # For stocks using MEXC as fair, spread is 0 (no arbitrage opportunity)
+        # Use bid-ask spread instead for volatility estimation
+        if is_stock and agg.binance_book.mid is None:
+            spread = 0.0
+            st.spread = spread
+            st.spread_bps = 0.0
+            # Use MEXC bid-ask spread for sigma calculation
+            if agg.mexc_book.bids and agg.mexc_book.asks:
+                bid = float(agg.mexc_book.bids[0][0]) if agg.mexc_book.bids else st.mexc_mid
+                ask = float(agg.mexc_book.asks[0][0]) if agg.mexc_book.asks else st.mexc_mid
+                ba_spread = ask - bid
+                agg.spread_samples.append((now, ba_spread))
+        else:
+            # Normal case: spread between MEXC and Binance
+            spread = st.mexc_mid - st.fair
+            st.spread = spread
+            st.spread_bps = spread / st.fair * 1e4 if st.fair > 0 else None
 
         # σ over rolling window
         win = float(self.cfg.strategy.sigma_spread_window_sec)
@@ -311,10 +360,24 @@ class Aggregator:
                     setattr(st, target_attr, (p1 - p0) / p0 * 1e4 / dt)
 
         # Book top notional
-        st.mexc_book_top10_notional = agg.mexc_book.top_notional(10)
+        st.mexc_book_top10_notional = agg.mexc_book.top_notional(10, contract_size=contract_size)
 
         # Top-5 book imbalance on MEXC (microstructure signal)
-        st.mexc_book_imbalance = _book_imbalance_log(agg.mexc_book, levels=5)
+        st.mexc_book_imbalance = _book_imbalance_log(
+            agg.mexc_book, levels=5, contract_size=contract_size
+        )
+
+        micro_levels = 3
+        st.long_path_hole_points = agg.mexc_book.path_hole_points("LONG", levels=micro_levels)
+        st.short_path_hole_points = agg.mexc_book.path_hole_points("SHORT", levels=micro_levels)
+        st.long_path_shape = agg.mexc_book.level_shape_ratio("LONG", levels=micro_levels)
+        st.short_path_shape = agg.mexc_book.level_shape_ratio("SHORT", levels=micro_levels)
+        st.long_support_ratio = agg.mexc_book.support_ratio("LONG", levels=micro_levels)
+        st.short_support_ratio = agg.mexc_book.support_ratio("SHORT", levels=micro_levels)
+        st.long_support_shape = agg.mexc_book.level_shape_ratio("SHORT", levels=micro_levels)
+        st.short_support_shape = agg.mexc_book.level_shape_ratio("LONG", levels=micro_levels)
+        st.long_back_hole_points = agg.mexc_book.path_hole_points("SHORT", levels=micro_levels)
+        st.short_back_hole_points = agg.mexc_book.path_hole_points("LONG", levels=micro_levels)
 
         # Current MEXC spread + 30s rolling avg
         bb = agg.mexc_book.best_bid

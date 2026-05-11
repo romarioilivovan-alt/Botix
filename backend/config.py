@@ -4,11 +4,33 @@ import json
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = Path(os.environ.get("ZFEE_CONFIG_PATH") or _PROJECT_ROOT / "config.json")
+
+LEGACY_SYMBOL_ALIASES = {
+    "NVDA_USDT": "NVIDIA_USDT",
+    "MSTR_USDT": "MSTRSTOCK_USDT",
+}
+
+DEFAULT_BINANCE_SYMBOL_OVERRIDES = {
+    "PEPE_USDT": "1000PEPEUSDT",
+    "NVIDIA_USDT": "NVDAUSDT",
+    "MSTRSTOCK_USDT": "MSTRUSDT",
+    "TSLA_USDT": "TSLAUSDT",
+    "INTC_USDT": "INTCUSDT",
+}
+
+
+def normalize_symbol_name(symbol: str) -> str:
+    s = str(symbol or "").upper().strip()
+    if not s:
+        return s
+    if not s.endswith("_USDT") and "_" not in s:
+        s = f"{s}_USDT"
+    return LEGACY_SYMBOL_ALIASES.get(s, s)
 
 
 @dataclass
@@ -42,15 +64,26 @@ class StrategyConfig:
     entry_z: float = 1.8
     max_entry_z: float = 4.0
     cancel_z: float = 0.5
+    meanrev_min_spread_bps: float = 0.0
+    meanrev_require_book_alignment: bool = False
+    meanrev_min_imbalance_log: float = 0.0
 
     momentum_min_velocity_bps_per_sec: float = 1.0
     momentum_max_velocity_bps_per_sec: float = 8.0
     momentum_require_lag: bool = True
 
     ofi_min_usdt: float = 5_000
+    ofi_require_lag: bool = False
+    ofi_min_lag_bps: float = 0.0
+    ofi_max_chase_bps: float = 0.0
+    ofi_require_book_alignment: bool = False
+    ofi_min_imbalance_log: float = 0.0
 
     imbalance_min_log: float = 0.7
     imbalance_max_log: float = 3.0
+    imbalance_require_lag: bool = False
+    imbalance_min_lag_bps: float = 0.0
+    imbalance_max_chase_bps: float = 0.0
 
     sweep_min_usdt_1s: float = 25_000
 
@@ -63,6 +96,13 @@ class StrategyConfig:
     raw_momentum_window_sec: float = 1.0
     raw_momentum_require_5s_agree: bool = True
     raw_momentum_anti_fade_30s_bps: float = 3.0
+    raw_momentum_require_lag: bool = False
+    raw_momentum_min_lag_bps: float = 0.0
+    raw_momentum_max_chase_bps: float = 0.0
+    raw_momentum_require_ofi_alignment: bool = False
+    raw_momentum_min_ofi_usdt: float = 0.0
+    raw_momentum_require_book_alignment: bool = False
+    raw_momentum_min_imbalance_log: float = 0.0
 
     book_lean_min_ratio: float = 2.0
 
@@ -74,13 +114,31 @@ class StrategyConfig:
     confluence_max_velocity_bps: float = 20.0
     confluence_min_ofi_usdt: float = 3000
     confluence_min_imbalance_log: float = 0.5
+    confluence_require_lag: bool = False
+    confluence_min_lag_bps: float = 0.0
+    confluence_max_chase_bps: float = 0.0
 
     taker_entry: bool = False
+    # In real mode, optionally restrict entries to symbols that currently
+    # have MEXC zero-fee status.
+    real_require_zero_fee: bool = False
 
     entry_latency_ms: int = 200
+    signal_max_age_ms: int = 0
+    pre_submit_max_spread_drift_bps: float = 0.0
+    micro_levels: int = 0
+    micro_path_hole_max_points: float = 0.0
+    micro_support_ratio_min: float = 0.0
+    micro_support_shape_min: float = 0.0
+    micro_path_shape_min: float = 0.0
+    micro_back_hole_max_points: float = 0.0
     exit_latency_ms: int = 200
+    paper_tick_sec: float = 0.2
     taker_fee_bps: float = 0.0
     maker_fee_bps: float = 0.0
+    taker_ioc_simulation: bool = False
+    taker_ioc_price_buffer_bps: float = 2.0
+    taker_ioc_min_fill_ratio: float = 0.2
     quote_timeout_sec: float = 5.0
     quote_offset_ticks: int = 1
     min_spread_samples: int = 60
@@ -111,6 +169,28 @@ class StrategyConfig:
 
     use_fair_tp: bool = False
 
+    scalp_take_profit_bps: float = 0.0
+    scratch_exit_sec: float = 0.0
+    scratch_exit_bps: float = 0.0
+    profit_protect_arm_bps: float = 0.0
+    profit_giveback_bps: float = 0.0
+    fast_profit_arm_bps: float = 0.0
+    fast_profit_giveback_bps: float = 0.0
+    profit_protect_min_bps: float = 0.0
+    edge_collapse_exit_bps: float = 0.0
+    edge_loss_after_sec: float = 0.0
+    edge_loss_exit_bps: float = 0.0
+    settled_profit_sec: float = 0.0
+    settled_profit_min_bps: float = 0.0
+    settled_profit_max_drift_bps: float = 0.0
+    settled_profit_edge_bps: float = 0.0
+    dead_trade_after_sec: float = 0.0
+    dead_trade_max_bps: float = 0.0
+    bad_entry_guard_sec: float = 0.0
+    bad_entry_min_age_sec: float = 0.0
+    bad_entry_spread_bps: float = 0.0
+    bad_entry_exit_bps: float = 0.0
+
     # Multi-strategy mode: ANY | BEST | CONSENSUS
     algo_mode: str = "ANY"
     # Backstop SL by asset type (price fraction, not margin fraction)
@@ -127,6 +207,7 @@ class StrategyConfig:
 class RiskConfig:
     max_concurrent_positions: int = 5
     margin_pct_per_slot: float = 0.18
+    account_share_pct: float = 1.0
     leverage_mode: str = "max"
     fixed_leverage: int = 20
     book_depth_consume_pct: float = 0.05
@@ -135,6 +216,9 @@ class RiskConfig:
     max_drawdown_pct_kill: float = 0.50
 
     min_balance_usdt: float = 5.0
+    min_trade_margin_usdt: float = 1.0
+    # Hard cap for single-trade notional (0 = disabled).
+    max_notional_usdt: float = 0.0
 
 
 @dataclass
@@ -143,8 +227,51 @@ class SymbolOverride:
     enabled: bool = True
     leverage: Optional[int] = None
     margin_pct: Optional[float] = None
+    max_notional_usdt: Optional[float] = None
     sl_pct: Optional[float] = None
     max_hold_sec: Optional[float] = None
+    cooldown_min_sec: Optional[float] = None
+    cooldown_max_sec: Optional[float] = None
+    allow_long: Optional[bool] = None
+    allow_short: Optional[bool] = None
+    min_entry_score: Optional[float] = None
+    min_lag_bps: Optional[float] = None
+    max_chase_bps: Optional[float] = None
+    anti_fade_30s_bps: Optional[float] = None
+    min_abs_spread_bps: Optional[float] = None
+    entry_latency_ms: Optional[int] = None
+    signal_max_age_ms: Optional[int] = None
+    pre_submit_max_spread_drift_bps: Optional[float] = None
+    micro_levels: Optional[int] = None
+    micro_path_hole_max_points: Optional[float] = None
+    micro_support_ratio_min: Optional[float] = None
+    micro_support_shape_min: Optional[float] = None
+    micro_path_shape_min: Optional[float] = None
+    micro_back_hole_max_points: Optional[float] = None
+    taker_ioc_price_buffer_bps: Optional[float] = None
+    taker_ioc_min_fill_ratio: Optional[float] = None
+    scalp_take_profit_bps: Optional[float] = None
+    scratch_exit_sec: Optional[float] = None
+    scratch_exit_bps: Optional[float] = None
+    use_fair_tp: Optional[bool] = None
+    profit_protect_arm_bps: Optional[float] = None
+    profit_giveback_bps: Optional[float] = None
+    fast_profit_arm_bps: Optional[float] = None
+    fast_profit_giveback_bps: Optional[float] = None
+    profit_protect_min_bps: Optional[float] = None
+    edge_collapse_exit_bps: Optional[float] = None
+    edge_loss_after_sec: Optional[float] = None
+    edge_loss_exit_bps: Optional[float] = None
+    settled_profit_sec: Optional[float] = None
+    settled_profit_min_bps: Optional[float] = None
+    settled_profit_max_drift_bps: Optional[float] = None
+    settled_profit_edge_bps: Optional[float] = None
+    dead_trade_after_sec: Optional[float] = None
+    dead_trade_max_bps: Optional[float] = None
+    bad_entry_guard_sec: Optional[float] = None
+    bad_entry_min_age_sec: Optional[float] = None
+    bad_entry_spread_bps: Optional[float] = None
+    bad_entry_exit_bps: Optional[float] = None
     algorithms: Optional[List[str]] = None  # None = use global
     algo_mode: Optional[str] = None         # None = use global
 
@@ -165,6 +292,9 @@ class AppConfig:
     paper_starting_balance: float = 1000.0
 
     zero_fee_symbols: List[str] = field(default_factory=list)
+    binance_symbol_overrides: Dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULT_BINANCE_SYMBOL_OVERRIDES)
+    )
 
     # Per-symbol configuration overrides
     symbol_overrides: List[SymbolOverride] = field(default_factory=list)
@@ -207,16 +337,52 @@ def load_config() -> AppConfig:
         for item in raw_overrides:
             if not isinstance(item, dict):
                 continue
-            sym = str(item.get("symbol") or "")
+            sym = normalize_symbol_name(item.get("symbol") or "")
             if not sym:
                 continue
             ov = SymbolOverride(symbol=sym)
-            for fname in ("enabled", "leverage", "margin_pct", "sl_pct",
-                          "max_hold_sec", "algorithms", "algo_mode"):
+            for fname in (
+                "enabled", "leverage", "margin_pct", "max_notional_usdt", "sl_pct", "max_hold_sec",
+                "cooldown_min_sec", "cooldown_max_sec",
+                "allow_long", "allow_short",
+                "min_entry_score", "min_lag_bps", "max_chase_bps",
+                "anti_fade_30s_bps", "min_abs_spread_bps",
+                "entry_latency_ms", "signal_max_age_ms",
+                "pre_submit_max_spread_drift_bps",
+                "micro_levels", "micro_path_hole_max_points",
+                "micro_support_ratio_min", "micro_support_shape_min",
+                "micro_path_shape_min", "micro_back_hole_max_points",
+                "taker_ioc_price_buffer_bps", "taker_ioc_min_fill_ratio",
+                "scalp_take_profit_bps", "scratch_exit_sec", "scratch_exit_bps",
+                "use_fair_tp",
+                "profit_protect_arm_bps", "profit_giveback_bps",
+                "fast_profit_arm_bps", "fast_profit_giveback_bps",
+                "profit_protect_min_bps", "edge_collapse_exit_bps",
+                "edge_loss_after_sec", "edge_loss_exit_bps",
+                "settled_profit_sec", "settled_profit_min_bps",
+                "settled_profit_max_drift_bps", "settled_profit_edge_bps",
+                "dead_trade_after_sec", "dead_trade_max_bps",
+                "bad_entry_guard_sec", "bad_entry_min_age_sec",
+                "bad_entry_spread_bps", "bad_entry_exit_bps",
+                "algorithms", "algo_mode",
+            ):
                 if fname in item:
                     setattr(ov, fname, item[fname])
             parsed.append(ov)
         cfg.symbol_overrides = parsed
+
+    cfg.universe.exclude = [normalize_symbol_name(s) for s in (cfg.universe.exclude or []) if str(s or "").strip()]
+    cfg.universe.include_only = [normalize_symbol_name(s) for s in (cfg.universe.include_only or []) if str(s or "").strip()]
+    cfg.universe.force_include_symbols = [normalize_symbol_name(s) for s in (cfg.universe.force_include_symbols or []) if str(s or "").strip()]
+    cfg.zero_fee_symbols = [normalize_symbol_name(s) for s in (cfg.zero_fee_symbols or []) if str(s or "").strip()]
+
+    normalized_aliases: Dict[str, str] = dict(DEFAULT_BINANCE_SYMBOL_OVERRIDES)
+    for mexc_symbol, binance_symbol in (cfg.binance_symbol_overrides or {}).items():
+        norm = normalize_symbol_name(mexc_symbol)
+        if not norm:
+            continue
+        normalized_aliases[norm] = str(binance_symbol or "").upper().strip()
+    cfg.binance_symbol_overrides = normalized_aliases
 
     return cfg
 

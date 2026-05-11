@@ -1,8 +1,14 @@
 """Multi-symbol Binance Futures WebSocket client.
 
-Subscribes to a combined stream of `<symbol>@depth20@100ms` and `<symbol>@aggTrade`
+Subscribes to a combined stream of `<symbol>@depth20@100ms` and `<symbol>@trade`
 for all symbols in the working set. Automatically resubscribes when the set
 changes. Re-uses a single connection.
+
+Why `trade` and not `aggTrade`?
+Binance Futures currently emits live per-trade events for our symbols on
+`@trade`, while `@aggTrade` can stay silent. Our OFI / burst signals need the
+actual flow, so we subscribe to `trade` and still accept `aggTrade` on the
+handler side for compatibility.
 """
 
 from __future__ import annotations
@@ -77,7 +83,7 @@ class BinanceMultiWS:
             for s in syms:
                 ls = s.lower()
                 params.append(f"{ls}@depth20@100ms")
-                params.append(f"{ls}@aggTrade")
+                params.append(f"{ls}@trade")
             self._reqid += 1
             method = "SUBSCRIBE" if subscribe else "UNSUBSCRIBE"
             try:
@@ -101,7 +107,7 @@ class BinanceMultiWS:
                 for s in self._desired:
                     ls = s.lower()
                     streams.append(f"{ls}@depth20@100ms")
-                    streams.append(f"{ls}@aggTrade")
+                    streams.append(f"{ls}@trade")
                 # Binance limits combined-stream URL length; cap to ~200 streams (100 symbols × 2).
                 # Use SUBSCRIBE for the rest after connect.
                 first_chunk = streams[:200] if streams else []
@@ -111,7 +117,7 @@ class BinanceMultiWS:
                     url = f"{BINANCE_FUTURES_WS_BASE}?streams=" + "/".join(first_chunk)
                 else:
                     # No symbols yet — open empty wrapper to enable later SUBSCRIBE
-                    url = f"{BINANCE_FUTURES_WS_BASE}?streams=btcusdt@aggTrade"
+                    url = f"{BINANCE_FUTURES_WS_BASE}?streams=btcusdt@trade"
 
                 async with websockets.connect(
                     url, ping_interval=15, ping_timeout=15, max_size=4_000_000
@@ -167,7 +173,7 @@ class BinanceMultiWS:
             except Exception as e:
                 logger.warning("on_depth %s error: %s", sym_u, e)
 
-        elif kind == "aggTrade":
+        elif kind in ("trade", "aggTrade"):
             try:
                 price = float(data.get("p") or 0.0)
                 qty = float(data.get("q") or 0.0)

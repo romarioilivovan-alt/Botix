@@ -131,10 +131,12 @@ positions until you toggle it off (set `kill_switch=false` in state via restart)
 ## Latency
 
 This strategy is latency-sensitive. For real trading:
-- Run on a VPS in the same datacenter as MEXC. Resolve `contract.mexc.com`
-  with `nslookup` and check the IP's region (`whois` / ipinfo). MEXC commonly
-  hosts on AWS in Asia-Pacific.
-- Aim for < 10 ms ping to `contract.mexc.com`.
+- Measure from the actual VPS, not from your home PC.
+- Test both `contract.mexc.com:443` and `www.mexc.com:443`.
+- Prefer the VPS that gives the best end-to-end submit/fill time, not just the
+  prettiest ICMP ping.
+- Keep the trading dashboard light while running real mode; extra polling on
+  the same private path can distort latency.
 
 ---
 

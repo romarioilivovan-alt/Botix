@@ -1,0 +1,975 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: 0F
+      - generic [ref=e6]:
+        - generic [ref=e7]: 0fee Scanner
+        - generic [ref=e8]: multi-symbol mean-reversion bot
+    - generic [ref=e9]:
+      - generic [ref=e10]: "Binance: OK"
+      - generic [ref=e11]: "MEXC: OK"
+      - generic [ref=e12]: "Auth: ?"
+      - generic [ref=e13]: "Mode: logger RUN"
+    - generic [ref=e14]:
+      - combobox [ref=e15]:
+        - option "Logger" [selected]
+        - option "Paper"
+        - option "Real"
+      - button "Start" [ref=e16] [cursor=pointer]
+      - button "Stop" [ref=e17] [cursor=pointer]
+      - button "KILL ALL" [ref=e18] [cursor=pointer]
+  - navigation [ref=e19]:
+    - button "Dashboard" [ref=e20] [cursor=pointer]
+    - button "Symbols" [ref=e21] [cursor=pointer]
+  - main [ref=e23]:
+    - generic [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]: Equity
+        - generic [ref=e27]: "-"
+      - generic [ref=e28]: 0.00e+0 USDT
+      - generic [ref=e30]:
+        - generic [ref=e31]: Session start
+        - generic [ref=e32]: "0.00e+0"
+        - generic [ref=e33]: Peak
+        - generic [ref=e34]: "0.00e+0"
+        - generic [ref=e35]: Open positions
+        - generic [ref=e36]: "0"
+        - generic [ref=e37]: Universe
+        - generic [ref=e38]: "5"
+    - generic [ref=e39]:
+      - generic [ref=e40]:
+        - generic [ref=e41]: Top candidates
+        - generic [ref=e42]: score = |z| × liquidity × regime
+      - generic [ref=e43]:
+        - button "All" [ref=e44] [cursor=pointer]
+        - button "Crypto" [ref=e45] [cursor=pointer]
+        - button "Stocks" [ref=e46] [cursor=pointer]
+      - table [ref=e48]:
+        - rowgroup [ref=e49]:
+          - row "Symbol Side Score z Spread bps F MEXC Depth $ Blocked" [ref=e50]:
+            - columnheader "Symbol" [ref=e51]
+            - columnheader "Side" [ref=e52]
+            - columnheader "Score" [ref=e53]
+            - columnheader "z" [ref=e54]
+            - columnheader "Spread bps" [ref=e55]
+            - columnheader "F" [ref=e56]
+            - columnheader "MEXC" [ref=e57]
+            - columnheader "Depth $" [ref=e58]
+            - columnheader "Blocked" [ref=e59]
+        - rowgroup [ref=e60]:
+          - row "ENA_USDT - 0.00e+0 0.706365 0.901835 0.110885 0.110895 29967 no_algo_fired" [ref=e61]:
+            - cell "ENA_USDT" [ref=e62]
+            - cell "-" [ref=e63]
+            - cell "0.00e+0" [ref=e64]
+            - cell "0.706365" [ref=e65]
+            - cell "0.901835" [ref=e66]
+            - cell "0.110885" [ref=e67]
+            - cell "0.110895" [ref=e68]
+            - cell "29967" [ref=e69]
+            - cell "no_algo_fired" [ref=e70]
+          - row "NVIDIA_USDT - 0.00e+0 - - - 196.75 - no_algo_fired" [ref=e71]:
+            - cell "NVIDIA_USDT" [ref=e72]
+            - cell "-" [ref=e73]
+            - cell "0.00e+0" [ref=e74]
+            - cell "-" [ref=e75]
+            - cell "-" [ref=e76]
+            - cell "-" [ref=e77]
+            - cell "196.75" [ref=e78]
+            - cell "-" [ref=e79]
+            - cell "no_algo_fired" [ref=e80]
+          - row "MSTRSTOCK_USDT - 0.00e+0 - - - 181.26 - no_algo_fired" [ref=e81]:
+            - cell "MSTRSTOCK_USDT" [ref=e82]
+            - cell "-" [ref=e83]
+            - cell "0.00e+0" [ref=e84]
+            - cell "-" [ref=e85]
+            - cell "-" [ref=e86]
+            - cell "-" [ref=e87]
+            - cell "181.26" [ref=e88]
+            - cell "-" [ref=e89]
+            - cell "no_algo_fired" [ref=e90]
+          - row "TAO_USDT - 0.00e+0 0.00e+0 0.00e+0 288.15 288.15 11.58M no_algo_fired" [ref=e91]:
+            - cell "TAO_USDT" [ref=e92]
+            - cell "-" [ref=e93]
+            - cell "0.00e+0" [ref=e94]
+            - cell "0.00e+0" [ref=e95]
+            - cell "0.00e+0" [ref=e96]
+            - cell "288.15" [ref=e97]
+            - cell "288.15" [ref=e98]
+            - cell "11.58M" [ref=e99]
+            - cell "no_algo_fired" [ref=e100]
+          - row "BCH_USDT - 0.00e+0 0.00e+0 0.00e+0 475.05 475.05 9.50M no_algo_fired" [ref=e101]:
+            - cell "BCH_USDT" [ref=e102]
+            - cell "-" [ref=e103]
+            - cell "0.00e+0" [ref=e104]
+            - cell "0.00e+0" [ref=e105]
+            - cell "0.00e+0" [ref=e106]
+            - cell "475.05" [ref=e107]
+            - cell "475.05" [ref=e108]
+            - cell "9.50M" [ref=e109]
+            - cell "no_algo_fired" [ref=e110]
+    - generic [ref=e111]:
+      - generic [ref=e112]:
+        - generic [ref=e113]: Open positions
+        - generic [ref=e114]: "-"
+      - table [ref=e116]:
+        - rowgroup [ref=e117]:
+          - row "Symbol Side Entry SL TP Qty Lev PnL $ PnL %" [ref=e118]:
+            - columnheader "Symbol" [ref=e119]
+            - columnheader "Side" [ref=e120]
+            - columnheader "Entry" [ref=e121]
+            - columnheader "SL" [ref=e122]
+            - columnheader "TP" [ref=e123]
+            - columnheader "Qty" [ref=e124]
+            - columnheader "Lev" [ref=e125]
+            - columnheader "PnL $" [ref=e126]
+            - columnheader "PnL %" [ref=e127]
+        - rowgroup
+    - generic [ref=e128]:
+      - generic [ref=e129]:
+        - generic [ref=e130]: Recent trades
+        - generic [ref=e131]: last 50
+      - table [ref=e133]:
+        - rowgroup [ref=e134]:
+          - row "Time Symbol Side Entry Exit PnL $ PnL % Reason Dur s" [ref=e135]:
+            - columnheader "Time" [ref=e136]
+            - columnheader "Symbol" [ref=e137]
+            - columnheader "Side" [ref=e138]
+            - columnheader "Entry" [ref=e139]
+            - columnheader "Exit" [ref=e140]
+            - columnheader "PnL $" [ref=e141]
+            - columnheader "PnL %" [ref=e142]
+            - columnheader "Reason" [ref=e143]
+            - columnheader "Dur s" [ref=e144]
+        - rowgroup
+    - generic [ref=e145]:
+      - generic [ref=e146]:
+        - generic [ref=e147]: Logs
+        - generic [ref=e148]: tail
+      - generic [ref=e149]:
+        - generic [ref=e150]: 09:38:17 INFO [logger] ENA_USDT SHORT score=1.10 z=1.36
+        - generic [ref=e151]: 09:38:17 INFO [logger] TAO_USDT SHORT score=1.43 z=2.42
+        - generic [ref=e152]: 09:38:27 INFO [logger] TAO_USDT LONG score=1.66 z=-0.27
+        - generic [ref=e153]: 09:38:27 INFO [logger] TAO_USDT LONG score=1.60 z=-1.86
+        - generic [ref=e154]: 09:38:34 INFO [logger] BCH_USDT SHORT score=2.08 z=3.08
+        - generic [ref=e155]: 09:38:35 INFO [logger] ENA_USDT SHORT score=2.03 z=2.03
+        - generic [ref=e156]: 09:38:35 INFO [logger] ENA_USDT SHORT score=2.14 z=2.14
+        - generic [ref=e157]: 09:38:36 INFO [logger] ENA_USDT SHORT score=2.15 z=2.15
+        - generic [ref=e158]: 09:38:39 INFO [logger] ENA_USDT SHORT score=3.06 z=2.12
+        - generic [ref=e159]: 09:38:41 INFO [logger] BCH_USDT LONG score=2.66 z=-2.93
+        - generic [ref=e160]: 09:38:42 INFO [logger] BCH_USDT LONG score=1.97 z=-2.28
+        - generic [ref=e161]: 09:38:43 INFO [logger] BCH_USDT LONG score=1.97 z=-2.21
+        - generic [ref=e162]: 09:38:45 INFO [logger] BCH_USDT SHORT score=2.15 z=2.57
+        - generic [ref=e163]: 09:38:45 INFO [logger] ENA_USDT SHORT score=1.86 z=5.89
+        - generic [ref=e164]: 09:38:45 INFO [logger] ENA_USDT SHORT score=1.71 z=2.37
+        - generic [ref=e165]: 09:38:46 INFO [logger] ENA_USDT SHORT score=2.31 z=2.31
+        - generic [ref=e166]: 09:38:47 INFO [logger] ENA_USDT SHORT score=1.78 z=2.24
+        - generic [ref=e167]: 09:38:50 INFO [logger] TAO_USDT LONG score=1.61 z=-7.78
+        - generic [ref=e168]: 09:38:51 INFO [logger] TAO_USDT LONG score=1.95 z=-3.09
+        - generic [ref=e169]: 09:38:54 INFO [logger] ENA_USDT SHORT score=2.32 z=3.27
+        - generic [ref=e170]: 09:38:55 INFO [logger] ENA_USDT LONG score=1.44 z=1.09
+        - generic [ref=e171]: 09:38:56 INFO [logger] TAO_USDT LONG score=2.11 z=-2.11
+        - generic [ref=e172]: 09:38:57 INFO [logger] ENA_USDT SHORT score=1.72 z=2.15
+        - generic [ref=e173]: 09:38:57 INFO [logger] ENA_USDT SHORT score=1.04 z=1.61
+        - generic [ref=e174]: 09:38:59 INFO [logger] ENA_USDT LONG score=2.34 z=-2.67
+        - generic [ref=e175]: 09:38:59 INFO [logger] TAO_USDT LONG score=1.54 z=-2.59
+        - generic [ref=e176]: 09:39:00 INFO [logger] ENA_USDT LONG score=2.31 z=0.00
+        - generic [ref=e177]: 09:39:00 INFO [logger] TAO_USDT LONG score=1.47 z=-1.74
+        - generic [ref=e178]: 09:39:00 INFO [logger] ENA_USDT LONG score=2.04 z=0.00
+        - generic [ref=e179]: 09:39:00 INFO [logger] BCH_USDT LONG score=1.07 z=-2.14
+        - generic [ref=e180]: 09:39:01 INFO [logger] ENA_USDT LONG score=2.72 z=-0.47
+        - generic [ref=e181]: 09:39:01 INFO [logger] BCH_USDT LONG score=2.06 z=-2.06
+        - generic [ref=e182]: 09:39:02 INFO [logger] TAO_USDT LONG score=2.81 z=-6.73
+        - generic [ref=e183]: 09:39:03 INFO [logger] TAO_USDT LONG score=1.87 z=1.40
+        - generic [ref=e184]: 09:39:03 INFO [logger] TAO_USDT LONG score=1.39 z=-0.23
+        - generic [ref=e185]: 09:39:04 INFO [logger] TAO_USDT LONG score=1.57 z=-2.78
+        - generic [ref=e186]: 09:39:04 INFO [logger] ENA_USDT SHORT score=1.55 z=2.22
+        - generic [ref=e187]: 09:39:05 INFO [logger] ENA_USDT SHORT score=1.57 z=2.21
+        - generic [ref=e188]: 09:39:05 INFO [logger] TAO_USDT LONG score=1.81 z=-1.81
+        - generic [ref=e189]: 09:39:10 INFO [logger] ENA_USDT LONG score=2.42 z=-4.83
+        - generic [ref=e190]: 09:39:11 INFO [logger] ENA_USDT LONG score=2.52 z=0.81
+        - generic [ref=e191]: 09:39:11 INFO [logger] ENA_USDT SHORT score=1.92 z=2.78
+        - generic [ref=e192]: 09:39:12 INFO [logger] BCH_USDT SHORT score=1.90 z=3.03
+        - generic [ref=e193]: 09:39:12 INFO [logger] ENA_USDT LONG score=1.86 z=0.00
+        - generic [ref=e194]: 09:39:13 INFO [logger] BCH_USDT SHORT score=2.83 z=2.83
+        - generic [ref=e195]: 09:39:13 INFO [logger] BCH_USDT SHORT score=2.40 z=2.40
+        - generic [ref=e196]: 09:39:13 INFO [logger] TAO_USDT LONG score=1.02 z=0.00
+        - generic [ref=e197]: 09:39:14 INFO [logger] BCH_USDT SHORT score=2.07 z=2.07
+        - generic [ref=e198]: 09:39:15 INFO [logger] BCH_USDT SHORT score=2.04 z=2.04
+        - generic [ref=e199]: 09:39:15 INFO [logger] ENA_USDT SHORT score=1.04 z=0.40
+        - generic [ref=e200]: 09:39:16 INFO [logger] ENA_USDT SHORT score=1.05 z=1.63
+        - generic [ref=e201]: 09:39:17 INFO [logger] ENA_USDT LONG score=1.42 z=-1.23
+        - generic [ref=e202]: 09:39:17 INFO [logger] TAO_USDT SHORT score=1.67 z=0.00
+        - generic [ref=e203]: 09:39:17 INFO [logger] ENA_USDT LONG score=2.00 z=-2.32
+        - generic [ref=e204]: 09:39:18 INFO [logger] TAO_USDT SHORT score=1.28 z=0.00
+        - generic [ref=e205]: 09:39:22 INFO [logger] ENA_USDT SHORT score=1.02 z=0.73
+        - generic [ref=e206]: 09:39:23 INFO [logger] ENA_USDT SHORT score=1.04 z=0.00
+        - generic [ref=e207]: 09:39:25 INFO [logger] ENA_USDT SHORT score=1.08 z=1.50
+        - generic [ref=e208]: 09:39:26 INFO [logger] ENA_USDT SHORT score=2.16 z=1.09
+        - generic [ref=e209]: 09:39:27 INFO [logger] TAO_USDT LONG score=1.41 z=-2.38
+        - generic [ref=e210]: 09:39:29 INFO [logger] BCH_USDT SHORT score=1.69 z=2.04
+        - generic [ref=e211]: 09:39:30 INFO [logger] TAO_USDT LONG score=4.04 z=-7.54
+        - generic [ref=e212]: 09:39:30 INFO [logger] BCH_USDT SHORT score=1.36 z=1.86
+        - generic [ref=e213]: 09:39:30 INFO [logger] ENA_USDT SHORT score=1.01 z=0.00
+        - generic [ref=e214]: 09:39:30 INFO [logger] TAO_USDT LONG score=2.09 z=-2.27
+        - generic [ref=e215]: 09:39:31 INFO [logger] ENA_USDT SHORT score=1.03 z=1.45
+        - generic [ref=e216]: 09:39:35 INFO [logger] ENA_USDT SHORT score=2.03 z=3.22
+        - generic [ref=e217]: 09:39:36 INFO [logger] ENA_USDT SHORT score=2.44 z=0.00
+        - generic [ref=e218]: 09:39:37 INFO [logger] ENA_USDT LONG score=1.28 z=-2.09
+        - generic [ref=e219]: 09:39:38 INFO [logger] ENA_USDT LONG score=1.01 z=-1.72
+        - generic [ref=e220]: 09:39:39 INFO [logger] ENA_USDT SHORT score=1.54 z=-0.34
+        - generic [ref=e221]: 09:39:43 INFO [logger] TAO_USDT SHORT score=1.37 z=1.10
+        - generic [ref=e222]: 09:39:44 INFO [logger] BCH_USDT SHORT score=2.00 z=2.25
+        - generic [ref=e223]: 09:39:44 INFO [logger] TAO_USDT SHORT score=3.17 z=3.57
+        - generic [ref=e224]: 09:39:45 INFO [logger] TAO_USDT SHORT score=5.88 z=0.88
+        - generic [ref=e225]: 09:39:48 INFO [logger] TAO_USDT SHORT score=1.12 z=0.52
+        - generic [ref=e226]: 09:39:53 INFO [logger] ENA_USDT SHORT score=1.56 z=1.98
+        - generic [ref=e227]: 09:39:53 INFO [logger] ENA_USDT SHORT score=1.18 z=0.50
+        - generic [ref=e228]: 09:39:54 INFO [logger] ENA_USDT SHORT score=2.23 z=2.48
+        - generic [ref=e229]: 09:39:56 INFO [logger] BCH_USDT SHORT score=2.06 z=2.81
+        - generic [ref=e230]: 09:39:58 INFO [logger] BCH_USDT LONG score=2.30 z=-3.36
+        - generic [ref=e231]: 09:40:01 INFO [logger] ENA_USDT LONG score=2.85 z=0.00
+        - generic [ref=e232]: 09:40:01 INFO [logger] TAO_USDT SHORT score=2.89 z=5.71
+        - generic [ref=e233]: 09:40:01 INFO [logger] ENA_USDT SHORT score=1.68 z=1.99
+        - generic [ref=e234]: 09:40:02 INFO [logger] TAO_USDT SHORT score=2.48 z=2.50
+        - generic [ref=e235]: 09:40:02 INFO [logger] ENA_USDT SHORT score=1.76 z=3.52
+        - generic [ref=e236]: 09:40:03 INFO [logger] ENA_USDT SHORT score=3.19 z=3.19
+        - generic [ref=e237]: 09:40:03 INFO [logger] TAO_USDT SHORT score=2.05 z=2.30
+        - generic [ref=e238]: 09:40:03 INFO [logger] ENA_USDT SHORT score=2.97 z=2.97
+        - generic [ref=e239]: 09:40:03 INFO [logger] TAO_USDT SHORT score=1.91 z=1.91
+        - generic [ref=e240]: 09:40:06 INFO [logger] ENA_USDT SHORT score=1.55 z=1.46
+        - generic [ref=e241]: 09:40:07 INFO [logger] ENA_USDT SHORT score=1.82 z=2.26
+        - generic [ref=e242]: 09:40:08 INFO [logger] ENA_USDT SHORT score=1.67 z=1.86
+        - generic [ref=e243]: 09:40:09 INFO [logger] TAO_USDT LONG score=1.45 z=-0.33
+        - generic [ref=e244]: 09:40:09 INFO [logger] TAO_USDT LONG score=1.41 z=0.00
+        - generic [ref=e245]: 09:40:10 INFO [logger] ENA_USDT LONG score=1.32 z=-2.49
+        - generic [ref=e246]: 09:40:10 INFO [logger] TAO_USDT LONG score=1.49 z=-0.63
+        - generic [ref=e247]: 09:40:10 INFO [logger] ENA_USDT LONG score=1.85 z=0.00
+        - generic [ref=e248]: 09:40:13 INFO [logger] TAO_USDT LONG score=1.06 z=-1.53
+        - generic [ref=e249]: 09:40:13 INFO [logger] TAO_USDT LONG score=1.38 z=-0.45
+    - generic [ref=e250]:
+      - generic [ref=e251]:
+        - generic [ref=e252]: Config
+        - generic [ref=e253]: edit + save
+      - generic [ref=e254]:
+        - generic [ref=e255]: MEXC Web UID
+        - textbox [ref=e256]
+      - generic [ref=e257]: OpenAPI keys are NOT used — the bot trades only via the web-private endpoints to preserve 0-fee status.
+      - generic [ref=e258]: Symbols
+      - generic [ref=e259]: Empty selection = trade all 0-fee symbols that exist on Binance.
+      - textbox "filter…" [ref=e261]
+      - generic [ref=e262]:
+        - button "All" [ref=e263] [cursor=pointer]
+        - button "None" [ref=e264] [cursor=pointer]
+        - generic [ref=e265]: 5/221 (221 shown)
+      - generic [ref=e266]:
+        - generic [ref=e267] [cursor=pointer]:
+          - checkbox "1000BONK_USDT" [ref=e268]
+          - text: 1000BONK_USDT
+        - generic [ref=e269] [cursor=pointer]:
+          - checkbox "AAPLSTOCK_USDT" [ref=e270]
+          - text: AAPLSTOCK_USDT
+        - generic [ref=e271] [cursor=pointer]:
+          - checkbox "AAVE_USDT" [ref=e272]
+          - text: AAVE_USDT
+        - generic [ref=e273] [cursor=pointer]:
+          - checkbox "ABBVSTOCK_USDT" [ref=e274]
+          - text: ABBVSTOCK_USDT
+        - generic [ref=e275] [cursor=pointer]:
+          - checkbox "ABTSTOCK_USDT" [ref=e276]
+          - text: ABTSTOCK_USDT
+        - generic [ref=e277] [cursor=pointer]:
+          - checkbox "ACHRSTOCK_USDT" [ref=e278]
+          - text: ACHRSTOCK_USDT
+        - generic [ref=e279] [cursor=pointer]:
+          - checkbox "ACNSTOCK_USDT" [ref=e280]
+          - text: ACNSTOCK_USDT
+        - generic [ref=e281] [cursor=pointer]:
+          - checkbox "ADA_USDT" [ref=e282]
+          - text: ADA_USDT
+        - generic [ref=e283] [cursor=pointer]:
+          - checkbox "ADBESTOCK_USDT" [ref=e284]
+          - text: ADBESTOCK_USDT
+        - generic [ref=e285] [cursor=pointer]:
+          - checkbox "ALBSTOCK_USDT" [ref=e286]
+          - text: ALBSTOCK_USDT
+        - generic [ref=e287] [cursor=pointer]:
+          - checkbox "ALGO_USDT" [ref=e288]
+          - text: ALGO_USDT
+        - generic [ref=e289] [cursor=pointer]:
+          - checkbox "ALUMINUM_USDT" [ref=e290]
+          - text: ALUMINUM_USDT
+        - generic [ref=e291] [cursor=pointer]:
+          - checkbox "AMATSTOCK_USDT" [ref=e292]
+          - text: AMATSTOCK_USDT
+        - generic [ref=e293] [cursor=pointer]:
+          - checkbox "AMDSTOCK_USDT" [ref=e294]
+          - text: AMDSTOCK_USDT
+        - generic [ref=e295] [cursor=pointer]:
+          - checkbox "AMZNSTOCK_USDT" [ref=e296]
+          - text: AMZNSTOCK_USDT
+        - generic [ref=e297] [cursor=pointer]:
+          - checkbox "APE_USDT" [ref=e298]
+          - text: APE_USDT
+        - generic [ref=e299] [cursor=pointer]:
+          - checkbox "ARB_USDT" [ref=e300]
+          - text: ARB_USDT
+        - generic [ref=e301] [cursor=pointer]:
+          - checkbox "ARMSTOCK_USDT" [ref=e302]
+          - text: ARMSTOCK_USDT
+        - generic [ref=e303] [cursor=pointer]:
+          - checkbox "ASMLSTOCK_USDT" [ref=e304]
+          - text: ASMLSTOCK_USDT
+        - generic [ref=e305] [cursor=pointer]:
+          - checkbox "ASTER_USDT" [ref=e306]
+          - text: ASTER_USDT
+        - generic [ref=e307] [cursor=pointer]:
+          - checkbox "ASTSSTOCK_USDT" [ref=e308]
+          - text: ASTSSTOCK_USDT
+        - generic [ref=e309] [cursor=pointer]:
+          - checkbox "ATOM_USDT" [ref=e310]
+          - text: ATOM_USDT
+        - generic [ref=e311] [cursor=pointer]:
+          - checkbox "AVAX_USDT" [ref=e312]
+          - text: AVAX_USDT
+        - generic [ref=e313] [cursor=pointer]:
+          - checkbox "AVGOSTOCK_USDT" [ref=e314]
+          - text: AVGOSTOCK_USDT
+        - generic [ref=e315] [cursor=pointer]:
+          - checkbox "BABASTOCK_USDT" [ref=e316]
+          - text: BABASTOCK_USDT
+        - generic [ref=e317] [cursor=pointer]:
+          - checkbox "BACSTOCK_USDT" [ref=e318]
+          - text: BACSTOCK_USDT
+        - generic [ref=e319] [cursor=pointer]:
+          - checkbox "BASTOCK_USDT" [ref=e320]
+          - text: BASTOCK_USDT
+        - generic [ref=e321] [cursor=pointer]:
+          - checkbox "BBAISTOCK_USDT" [ref=e322]
+          - text: BBAISTOCK_USDT
+        - generic [ref=e323] [cursor=pointer]:
+          - checkbox "BCH_USDT" [checked] [ref=e324]
+          - text: BCH_USDT
+        - generic [ref=e325] [cursor=pointer]:
+          - checkbox "BEAT_USDT" [ref=e326]
+          - text: BEAT_USDT
+        - generic [ref=e327] [cursor=pointer]:
+          - checkbox "BLESS_USDT" [ref=e328]
+          - text: BLESS_USDT
+        - generic [ref=e329] [cursor=pointer]:
+          - checkbox "BMNRSTOCK_USDT" [ref=e330]
+          - text: BMNRSTOCK_USDT
+        - generic [ref=e331] [cursor=pointer]:
+          - checkbox "BNB_USDT" [ref=e332]
+          - text: BNB_USDT
+        - generic [ref=e333] [cursor=pointer]:
+          - checkbox "BRETT_USDT" [ref=e334]
+          - text: BRETT_USDT
+        - generic [ref=e335] [cursor=pointer]:
+          - checkbox "BULLA_USDT" [ref=e336]
+          - text: BULLA_USDT
+        - generic [ref=e337] [cursor=pointer]:
+          - checkbox "CHIP_USDT" [ref=e338]
+          - text: CHIP_USDT
+        - generic [ref=e339] [cursor=pointer]:
+          - checkbox "CHZ_USDT" [ref=e340]
+          - text: CHZ_USDT
+        - generic [ref=e341] [cursor=pointer]:
+          - checkbox "COAI_USDT" [ref=e342]
+          - text: COAI_USDT
+        - generic [ref=e343] [cursor=pointer]:
+          - checkbox "COHRSTOCK_USDT" [ref=e344]
+          - text: COHRSTOCK_USDT
+        - generic [ref=e345] [cursor=pointer]:
+          - checkbox "COINBASE_USDT" [ref=e346]
+          - text: COINBASE_USDT
+        - generic [ref=e347] [cursor=pointer]:
+          - checkbox "COPPER_USDT" [ref=e348]
+          - text: COPPER_USDT
+        - generic [ref=e349] [cursor=pointer]:
+          - checkbox "COPSTOCK_USDT" [ref=e350]
+          - text: COPSTOCK_USDT
+        - generic [ref=e351] [cursor=pointer]:
+          - checkbox "COSTSTOCK_USDT" [ref=e352]
+          - text: COSTSTOCK_USDT
+        - generic [ref=e353] [cursor=pointer]:
+          - checkbox "CRCLSTOCK_USDT" [ref=e354]
+          - text: CRCLSTOCK_USDT
+        - generic [ref=e355] [cursor=pointer]:
+          - checkbox "CRMSTOCK_USDT" [ref=e356]
+          - text: CRMSTOCK_USDT
+        - generic [ref=e357] [cursor=pointer]:
+          - checkbox "CRV_USDT" [ref=e358]
+          - text: CRV_USDT
+        - generic [ref=e359] [cursor=pointer]:
+          - checkbox "CRWDSTOCK_USDT" [ref=e360]
+          - text: CRWDSTOCK_USDT
+        - generic [ref=e361] [cursor=pointer]:
+          - checkbox "CRWVSTOCK_USDT" [ref=e362]
+          - text: CRWVSTOCK_USDT
+        - generic [ref=e363] [cursor=pointer]:
+          - checkbox "CSCOSTOCK_USDT" [ref=e364]
+          - text: CSCOSTOCK_USDT
+        - generic [ref=e365] [cursor=pointer]:
+          - checkbox "CSTOCK_USDT" [ref=e366]
+          - text: CSTOCK_USDT
+        - generic [ref=e367] [cursor=pointer]:
+          - checkbox "CVNASTOCK_USDT" [ref=e368]
+          - text: CVNASTOCK_USDT
+        - generic [ref=e369] [cursor=pointer]:
+          - checkbox "CVXSTOCK_USDT" [ref=e370]
+          - text: CVXSTOCK_USDT
+        - generic [ref=e371] [cursor=pointer]:
+          - checkbox "DASH_USDT" [ref=e372]
+          - text: DASH_USDT
+        - generic [ref=e373] [cursor=pointer]:
+          - checkbox "DOGE_USDT" [ref=e374]
+          - text: DOGE_USDT
+        - generic [ref=e375] [cursor=pointer]:
+          - checkbox "DOT_USDT" [ref=e376]
+          - text: DOT_USDT
+        - generic [ref=e377] [cursor=pointer]:
+          - checkbox "ENA_USDT" [checked] [ref=e378]
+          - text: ENA_USDT
+        - generic [ref=e379] [cursor=pointer]:
+          - checkbox "ENSO_USDT" [ref=e380]
+          - text: ENSO_USDT
+        - generic [ref=e381] [cursor=pointer]:
+          - checkbox "ESP_USDT" [ref=e382]
+          - text: ESP_USDT
+        - generic [ref=e383] [cursor=pointer]:
+          - checkbox "ETC_USDT" [ref=e384]
+          - text: ETC_USDT
+        - generic [ref=e385] [cursor=pointer]:
+          - checkbox "ETHFI_USDT" [ref=e386]
+          - text: ETHFI_USDT
+        - generic [ref=e387] [cursor=pointer]:
+          - checkbox "EWJ_USDT" [ref=e388]
+          - text: EWJ_USDT
+        - generic [ref=e389] [cursor=pointer]:
+          - checkbox "EWY_USDT" [ref=e390]
+          - text: EWY_USDT
+        - generic [ref=e391] [cursor=pointer]:
+          - checkbox "FARTCOIN_USDT" [ref=e392]
+          - text: FARTCOIN_USDT
+        - generic [ref=e393] [cursor=pointer]:
+          - checkbox "FET_USDT" [ref=e394]
+          - text: FET_USDT
+        - generic [ref=e395] [cursor=pointer]:
+          - checkbox "FHE_USDT" [ref=e396]
+          - text: FHE_USDT
+        - generic [ref=e397] [cursor=pointer]:
+          - checkbox "FIGSTOCK_USDT" [ref=e398]
+          - text: FIGSTOCK_USDT
+        - generic [ref=e399] [cursor=pointer]:
+          - checkbox "FLOKI_USDT" [ref=e400]
+          - text: FLOKI_USDT
+        - generic [ref=e401] [cursor=pointer]:
+          - checkbox "FOLKS_USDT" [ref=e402]
+          - text: FOLKS_USDT
+        - generic [ref=e403] [cursor=pointer]:
+          - checkbox "FUTUSTOCK_USDT" [ref=e404]
+          - text: FUTUSTOCK_USDT
+        - generic [ref=e405] [cursor=pointer]:
+          - checkbox "GALA_USDT" [ref=e406]
+          - text: GALA_USDT
+        - generic [ref=e407] [cursor=pointer]:
+          - checkbox "GESTOCK_USDT" [ref=e408]
+          - text: GESTOCK_USDT
+        - generic [ref=e409] [cursor=pointer]:
+          - checkbox "GEVSTOCK_USDT" [ref=e410]
+          - text: GEVSTOCK_USDT
+        - generic [ref=e411] [cursor=pointer]:
+          - checkbox "GIGGLE_USDT" [ref=e412]
+          - text: GIGGLE_USDT
+        - generic [ref=e413] [cursor=pointer]:
+          - checkbox "GOAT_USDT" [ref=e414]
+          - text: GOAT_USDT
+        - generic [ref=e415] [cursor=pointer]:
+          - checkbox "GOOGLSTOCK_USDT" [ref=e416]
+          - text: GOOGLSTOCK_USDT
+        - generic [ref=e417] [cursor=pointer]:
+          - checkbox "GRT_USDT" [ref=e418]
+          - text: GRT_USDT
+        - generic [ref=e419] [cursor=pointer]:
+          - checkbox "GSSTOCK_USDT" [ref=e420]
+          - text: GSSTOCK_USDT
+        - generic [ref=e421] [cursor=pointer]:
+          - checkbox "HBAR_USDT" [ref=e422]
+          - text: HBAR_USDT
+        - generic [ref=e423] [cursor=pointer]:
+          - checkbox "HIMSSTOCK_USDT" [ref=e424]
+          - text: HIMSSTOCK_USDT
+        - generic [ref=e425] [cursor=pointer]:
+          - checkbox "HK50_USDT" [ref=e426]
+          - text: HK50_USDT
+        - generic [ref=e427] [cursor=pointer]:
+          - checkbox "HYPE_USDT" [ref=e428]
+          - text: HYPE_USDT
+        - generic [ref=e429] [cursor=pointer]:
+          - checkbox "H_USDT" [ref=e430]
+          - text: H_USDT
+        - generic [ref=e431] [cursor=pointer]:
+          - checkbox "IBMSTOCK_USDT" [ref=e432]
+          - text: IBMSTOCK_USDT
+        - generic [ref=e433] [cursor=pointer]:
+          - checkbox "ICP_USDT" [ref=e434]
+          - text: ICP_USDT
+        - generic [ref=e435] [cursor=pointer]:
+          - checkbox "INJ_USDT" [ref=e436]
+          - text: INJ_USDT
+        - generic [ref=e437] [cursor=pointer]:
+          - checkbox "INTCSTOCK_USDT" [ref=e438]
+          - text: INTCSTOCK_USDT
+        - generic [ref=e439] [cursor=pointer]:
+          - checkbox "INTUSTOCK_USDT" [ref=e440]
+          - text: INTUSTOCK_USDT
+        - generic [ref=e441] [cursor=pointer]:
+          - checkbox "IONQSTOCK_USDT" [ref=e442]
+          - text: IONQSTOCK_USDT
+        - generic [ref=e443] [cursor=pointer]:
+          - checkbox "IO_USDT" [ref=e444]
+          - text: IO_USDT
+        - generic [ref=e445] [cursor=pointer]:
+          - checkbox "IRENSTOCK_USDT" [ref=e446]
+          - text: IRENSTOCK_USDT
+        - generic [ref=e447] [cursor=pointer]:
+          - checkbox "JASMY_USDT" [ref=e448]
+          - text: JASMY_USDT
+        - generic [ref=e449] [cursor=pointer]:
+          - checkbox "JDSTOCK_USDT" [ref=e450]
+          - text: JDSTOCK_USDT
+        - generic [ref=e451] [cursor=pointer]:
+          - checkbox "JP225_USDT" [ref=e452]
+          - text: JP225_USDT
+        - generic [ref=e453] [cursor=pointer]:
+          - checkbox "JPMSTOCK_USDT" [ref=e454]
+          - text: JPMSTOCK_USDT
+        - generic [ref=e455] [cursor=pointer]:
+          - checkbox "JUP_USDT" [ref=e456]
+          - text: JUP_USDT
+        - generic [ref=e457] [cursor=pointer]:
+          - checkbox "KAS_USDT" [ref=e458]
+          - text: KAS_USDT
+        - generic [ref=e459] [cursor=pointer]:
+          - checkbox "KLACSTOCK_USDT" [ref=e460]
+          - text: KLACSTOCK_USDT
+        - generic [ref=e461] [cursor=pointer]:
+          - checkbox "KOSTOCK_USDT" [ref=e462]
+          - text: KOSTOCK_USDT
+        - generic [ref=e463] [cursor=pointer]:
+          - checkbox "LAYER_USDT" [ref=e464]
+          - text: LAYER_USDT
+        - generic [ref=e465] [cursor=pointer]:
+          - checkbox "LEAD_USDT" [ref=e466]
+          - text: LEAD_USDT
+        - generic [ref=e467] [cursor=pointer]:
+          - checkbox "LIGHT_USDT" [ref=e468]
+          - text: LIGHT_USDT
+        - generic [ref=e469] [cursor=pointer]:
+          - checkbox "LINK_USDT" [ref=e470]
+          - text: LINK_USDT
+        - generic [ref=e471] [cursor=pointer]:
+          - checkbox "LINSTOCK_USDT" [ref=e472]
+          - text: LINSTOCK_USDT
+        - generic [ref=e473] [cursor=pointer]:
+          - checkbox "LITESTOCK_USDT" [ref=e474]
+          - text: LITESTOCK_USDT
+        - generic [ref=e475] [cursor=pointer]:
+          - checkbox "LIT_USDT" [ref=e476]
+          - text: LIT_USDT
+        - generic [ref=e477] [cursor=pointer]:
+          - checkbox "LLYSTOCK_USDT" [ref=e478]
+          - text: LLYSTOCK_USDT
+        - generic [ref=e479] [cursor=pointer]:
+          - checkbox "LMTSTOCK_USDT" [ref=e480]
+          - text: LMTSTOCK_USDT
+        - generic [ref=e481] [cursor=pointer]:
+          - checkbox "LRCXSTOCK_USDT" [ref=e482]
+          - text: LRCXSTOCK_USDT
+        - generic [ref=e483] [cursor=pointer]:
+          - checkbox "LTC_USDT" [ref=e484]
+          - text: LTC_USDT
+        - generic [ref=e485] [cursor=pointer]:
+          - checkbox "LUNC_USDT" [ref=e486]
+          - text: LUNC_USDT
+        - generic [ref=e487] [cursor=pointer]:
+          - checkbox "LYN_USDT" [ref=e488]
+          - text: LYN_USDT
+        - generic [ref=e489] [cursor=pointer]:
+          - checkbox "MASTOCK_USDT" [ref=e490]
+          - text: MASTOCK_USDT
+        - generic [ref=e491] [cursor=pointer]:
+          - checkbox "MCDSTOCK_USDT" [ref=e492]
+          - text: MCDSTOCK_USDT
+        - generic [ref=e493] [cursor=pointer]:
+          - checkbox "MEGA_USDT" [ref=e494]
+          - text: MEGA_USDT
+        - generic [ref=e495] [cursor=pointer]:
+          - checkbox "MELISTOCK_USDT" [ref=e496]
+          - text: MELISTOCK_USDT
+        - generic [ref=e497] [cursor=pointer]:
+          - checkbox "METASTOCK_USDT" [ref=e498]
+          - text: METASTOCK_USDT
+        - generic [ref=e499] [cursor=pointer]:
+          - checkbox "MRVLSTOCK_USDT" [ref=e500]
+          - text: MRVLSTOCK_USDT
+        - generic [ref=e501] [cursor=pointer]:
+          - checkbox "MSFTSTOCK_USDT" [ref=e502]
+          - text: MSFTSTOCK_USDT
+        - generic [ref=e503] [cursor=pointer]:
+          - checkbox "MSTRSTOCK_USDT" [checked] [ref=e504]
+          - text: MSTRSTOCK_USDT
+        - generic [ref=e505] [cursor=pointer]:
+          - checkbox "MUSTOCK_USDT" [ref=e506]
+          - text: MUSTOCK_USDT
+        - generic [ref=e507] [cursor=pointer]:
+          - checkbox "MYX_USDT" [ref=e508]
+          - text: MYX_USDT
+        - generic [ref=e509] [cursor=pointer]:
+          - checkbox "NAS100_USDT" [ref=e510]
+          - text: NAS100_USDT
+        - generic [ref=e511] [cursor=pointer]:
+          - checkbox "NBISSTOCK_USDT" [ref=e512]
+          - text: NBISSTOCK_USDT
+        - generic [ref=e513] [cursor=pointer]:
+          - checkbox "NEAR_USDT" [ref=e514]
+          - text: NEAR_USDT
+        - generic [ref=e515] [cursor=pointer]:
+          - checkbox "NFLXSTOCK_USDT" [ref=e516]
+          - text: NFLXSTOCK_USDT
+        - generic [ref=e517] [cursor=pointer]:
+          - checkbox "NGAS_USDT" [ref=e518]
+          - text: NGAS_USDT
+        - generic [ref=e519] [cursor=pointer]:
+          - checkbox "NICKEL_USDT" [ref=e520]
+          - text: NICKEL_USDT
+        - generic [ref=e521] [cursor=pointer]:
+          - checkbox "NKESTOCK_USDT" [ref=e522]
+          - text: NKESTOCK_USDT
+        - generic [ref=e523] [cursor=pointer]:
+          - checkbox "NOWSTOCK_USDT" [ref=e524]
+          - text: NOWSTOCK_USDT
+        - generic [ref=e525] [cursor=pointer]:
+          - checkbox "NVIDIA_USDT" [checked] [ref=e526]
+          - text: NVIDIA_USDT
+        - generic [ref=e527] [cursor=pointer]:
+          - checkbox "ONDO_USDT" [ref=e528]
+          - text: ONDO_USDT
+        - generic [ref=e529] [cursor=pointer]:
+          - checkbox "ONDSSTOCK_USDT" [ref=e530]
+          - text: ONDSSTOCK_USDT
+        - generic [ref=e531] [cursor=pointer]:
+          - checkbox "OP_USDT" [ref=e532]
+          - text: OP_USDT
+        - generic [ref=e533] [cursor=pointer]:
+          - checkbox "ORCLSTOCK_USDT" [ref=e534]
+          - text: ORCLSTOCK_USDT
+        - generic [ref=e535] [cursor=pointer]:
+          - checkbox "ORDI_USDT" [ref=e536]
+          - text: ORDI_USDT
+        - generic [ref=e537] [cursor=pointer]:
+          - checkbox "OXYSTOCK_USDT" [ref=e538]
+          - text: OXYSTOCK_USDT
+        - generic [ref=e539] [cursor=pointer]:
+          - checkbox "PANWSTOCK_USDT" [ref=e540]
+          - text: PANWSTOCK_USDT
+        - generic [ref=e541] [cursor=pointer]:
+          - checkbox "PAYPSTOCK_USDT" [ref=e542]
+          - text: PAYPSTOCK_USDT
+        - generic [ref=e543] [cursor=pointer]:
+          - checkbox "PDDSTOCK_USDT" [ref=e544]
+          - text: PDDSTOCK_USDT
+        - generic [ref=e545] [cursor=pointer]:
+          - checkbox "PENGUIN_USDT" [ref=e546]
+          - text: PENGUIN_USDT
+        - generic [ref=e547] [cursor=pointer]:
+          - checkbox "PENGU_USDT" [ref=e548]
+          - text: PENGU_USDT
+        - generic [ref=e549] [cursor=pointer]:
+          - checkbox "PEPE_USDT" [ref=e550]
+          - text: PEPE_USDT
+        - generic [ref=e551] [cursor=pointer]:
+          - checkbox "PEPSTOCK_USDT" [ref=e552]
+          - text: PEPSTOCK_USDT
+        - generic [ref=e553] [cursor=pointer]:
+          - checkbox "PGSTOCK_USDT" [ref=e554]
+          - text: PGSTOCK_USDT
+        - generic [ref=e555] [cursor=pointer]:
+          - checkbox "PIPPIN_USDT" [ref=e556]
+          - text: PIPPIN_USDT
+        - generic [ref=e557] [cursor=pointer]:
+          - checkbox "PIXEL_USDT" [ref=e558]
+          - text: PIXEL_USDT
+        - generic [ref=e559] [cursor=pointer]:
+          - checkbox "PI_USDT" [ref=e560]
+          - text: PI_USDT
+        - generic [ref=e561] [cursor=pointer]:
+          - checkbox "PLAY_USDT" [ref=e562]
+          - text: PLAY_USDT
+        - generic [ref=e563] [cursor=pointer]:
+          - checkbox "PLTRSTOCK_USDT" [ref=e564]
+          - text: PLTRSTOCK_USDT
+        - generic [ref=e565] [cursor=pointer]:
+          - checkbox "PNUT_USDT" [ref=e566]
+          - text: PNUT_USDT
+        - generic [ref=e567] [cursor=pointer]:
+          - checkbox "POL_USDT" [ref=e568]
+          - text: POL_USDT
+        - generic [ref=e569] [cursor=pointer]:
+          - checkbox "POWER_USDT" [ref=e570]
+          - text: POWER_USDT
+        - generic [ref=e571] [cursor=pointer]:
+          - checkbox "PUMPFUN_USDT" [ref=e572]
+          - text: PUMPFUN_USDT
+        - generic [ref=e573] [cursor=pointer]:
+          - checkbox "PYPLSTOCK_USDT" [ref=e574]
+          - text: PYPLSTOCK_USDT
+        - generic [ref=e575] [cursor=pointer]:
+          - checkbox "PYTH_USDT" [ref=e576]
+          - text: PYTH_USDT
+        - generic [ref=e577] [cursor=pointer]:
+          - checkbox "QCOMSTOCK_USDT" [ref=e578]
+          - text: QCOMSTOCK_USDT
+        - generic [ref=e579] [cursor=pointer]:
+          - checkbox "QQQSTOCK_USDT" [ref=e580]
+          - text: QQQSTOCK_USDT
+        - generic [ref=e581] [cursor=pointer]:
+          - checkbox "RAVE_USDT" [ref=e582]
+          - text: RAVE_USDT
+        - generic [ref=e583] [cursor=pointer]:
+          - checkbox "RDDTSTOCK_USDT" [ref=e584]
+          - text: RDDTSTOCK_USDT
+        - generic [ref=e585] [cursor=pointer]:
+          - checkbox "RENDER_USDT" [ref=e586]
+          - text: RENDER_USDT
+        - generic [ref=e587] [cursor=pointer]:
+          - checkbox "RIVER_USDT" [ref=e588]
+          - text: RIVER_USDT
+        - generic [ref=e589] [cursor=pointer]:
+          - checkbox "RKLBSTOCK_USDT" [ref=e590]
+          - text: RKLBSTOCK_USDT
+        - generic [ref=e591] [cursor=pointer]:
+          - checkbox "ROBINHOOD_USDT" [ref=e592]
+          - text: ROBINHOOD_USDT
+        - generic [ref=e593] [cursor=pointer]:
+          - checkbox "RTXSTOCK_USDT" [ref=e594]
+          - text: RTXSTOCK_USDT
+        - generic [ref=e595] [cursor=pointer]:
+          - checkbox "SBUXSTOCK_USDT" [ref=e596]
+          - text: SBUXSTOCK_USDT
+        - generic [ref=e597] [cursor=pointer]:
+          - checkbox "SEI_USDT" [ref=e598]
+          - text: SEI_USDT
+        - generic [ref=e599] [cursor=pointer]:
+          - checkbox "SHIB_USDT" [ref=e600]
+          - text: SHIB_USDT
+        - generic [ref=e601] [cursor=pointer]:
+          - checkbox "SHOPSTOCK_USDT" [ref=e602]
+          - text: SHOPSTOCK_USDT
+        - generic [ref=e603] [cursor=pointer]:
+          - checkbox "SILVER_USDT" [ref=e604]
+          - text: SILVER_USDT
+        - generic [ref=e605] [cursor=pointer]:
+          - checkbox "SIREN_USDT" [ref=e606]
+          - text: SIREN_USDT
+        - generic [ref=e607] [cursor=pointer]:
+          - checkbox "SMCISTOCK_USDT" [ref=e608]
+          - text: SMCISTOCK_USDT
+        - generic [ref=e609] [cursor=pointer]:
+          - checkbox "SNDKSTOCK_USDT" [ref=e610]
+          - text: SNDKSTOCK_USDT
+        - generic [ref=e611] [cursor=pointer]:
+          - checkbox "SNOWSTOCK_USDT" [ref=e612]
+          - text: SNOWSTOCK_USDT
+        - generic [ref=e613] [cursor=pointer]:
+          - checkbox "SOL_USDT" [ref=e614]
+          - text: SOL_USDT
+        - generic [ref=e615] [cursor=pointer]:
+          - checkbox "SOXX_USDT" [ref=e616]
+          - text: SOXX_USDT
+        - generic [ref=e617] [cursor=pointer]:
+          - checkbox "SPOTSTOCK_USDT" [ref=e618]
+          - text: SPOTSTOCK_USDT
+        - generic [ref=e619] [cursor=pointer]:
+          - checkbox "SPX500_USDT" [ref=e620]
+          - text: SPX500_USDT
+        - generic [ref=e621] [cursor=pointer]:
+          - checkbox "STO_USDT" [ref=e622]
+          - text: STO_USDT
+        - generic [ref=e623] [cursor=pointer]:
+          - checkbox "STRK_USDT" [ref=e624]
+          - text: STRK_USDT
+        - generic [ref=e625] [cursor=pointer]:
+          - checkbox "STXSTOCK_USDT" [ref=e626]
+          - text: STXSTOCK_USDT
+        - generic [ref=e627] [cursor=pointer]:
+          - checkbox "STX_USDT" [ref=e628]
+          - text: STX_USDT
+        - generic [ref=e629] [cursor=pointer]:
+          - checkbox "SUI_USDT" [ref=e630]
+          - text: SUI_USDT
+        - generic [ref=e631] [cursor=pointer]:
+          - checkbox "TAO_USDT" [checked] [ref=e632]
+          - text: TAO_USDT
+        - generic [ref=e633] [cursor=pointer]:
+          - checkbox "TESLA_USDT" [ref=e634]
+          - text: TESLA_USDT
+        - generic [ref=e635] [cursor=pointer]:
+          - checkbox "TIA_USDT" [ref=e636]
+          - text: TIA_USDT
+        - generic [ref=e637] [cursor=pointer]:
+          - checkbox "TONCOIN_USDT" [ref=e638]
+          - text: TONCOIN_USDT
+        - generic [ref=e639] [cursor=pointer]:
+          - checkbox "TRADOOR_USDT" [ref=e640]
+          - text: TRADOOR_USDT
+        - generic [ref=e641] [cursor=pointer]:
+          - checkbox "TRUMPOFFICIAL_USDT" [ref=e642]
+          - text: TRUMPOFFICIAL_USDT
+        - generic [ref=e643] [cursor=pointer]:
+          - checkbox "TSMSTOCK_USDT" [ref=e644]
+          - text: TSMSTOCK_USDT
+        - generic [ref=e645] [cursor=pointer]:
+          - checkbox "TXNSTOCK_USDT" [ref=e646]
+          - text: TXNSTOCK_USDT
+        - generic [ref=e647] [cursor=pointer]:
+          - checkbox "UBERSTOCK_USDT" [ref=e648]
+          - text: UBERSTOCK_USDT
+        - generic [ref=e649] [cursor=pointer]:
+          - checkbox "UKOIL_USDT" [ref=e650]
+          - text: UKOIL_USDT
+        - generic [ref=e651] [cursor=pointer]:
+          - checkbox "UNHSTOCK_USDT" [ref=e652]
+          - text: UNHSTOCK_USDT
+        - generic [ref=e653] [cursor=pointer]:
+          - checkbox "UNI_USDT" [ref=e654]
+          - text: UNI_USDT
+        - generic [ref=e655] [cursor=pointer]:
+          - checkbox "US30_USDT" [ref=e656]
+          - text: US30_USDT
+        - generic [ref=e657] [cursor=pointer]:
+          - checkbox "USOIL_USDT" [ref=e658]
+          - text: USOIL_USDT
+        - generic [ref=e659] [cursor=pointer]:
+          - checkbox "VIRTUAL_USDT" [ref=e660]
+          - text: VIRTUAL_USDT
+        - generic [ref=e661] [cursor=pointer]:
+          - checkbox "VRTSTOCK_USDT" [ref=e662]
+          - text: VRTSTOCK_USDT
+        - generic [ref=e663] [cursor=pointer]:
+          - checkbox "VSTOCK_USDT" [ref=e664]
+          - text: VSTOCK_USDT
+        - generic [ref=e665] [cursor=pointer]:
+          - checkbox "VVV_USDT" [ref=e666]
+          - text: VVV_USDT
+        - generic [ref=e667] [cursor=pointer]:
+          - checkbox "VZSTOCK_USDT" [ref=e668]
+          - text: VZSTOCK_USDT
+        - generic [ref=e669] [cursor=pointer]:
+          - checkbox "WDCSTOCK_USDT" [ref=e670]
+          - text: WDCSTOCK_USDT
+        - generic [ref=e671] [cursor=pointer]:
+          - checkbox "WFCSTOCK_USDT" [ref=e672]
+          - text: WFCSTOCK_USDT
+        - generic [ref=e673] [cursor=pointer]:
+          - checkbox "WIF_USDT" [ref=e674]
+          - text: WIF_USDT
+        - generic [ref=e675] [cursor=pointer]:
+          - checkbox "WLD_USDT" [ref=e676]
+          - text: WLD_USDT
+        - generic [ref=e677] [cursor=pointer]:
+          - checkbox "WLFI_USDT" [ref=e678]
+          - text: WLFI_USDT
+        - generic [ref=e679] [cursor=pointer]:
+          - checkbox "WMTSTOCK_USDT" [ref=e680]
+          - text: WMTSTOCK_USDT
+        - generic [ref=e681] [cursor=pointer]:
+          - checkbox "XAI_USDT" [ref=e682]
+          - text: XAI_USDT
+        - generic [ref=e683] [cursor=pointer]:
+          - checkbox "XAN_USDT" [ref=e684]
+          - text: XAN_USDT
+        - generic [ref=e685] [cursor=pointer]:
+          - checkbox "XAUT_USDT" [ref=e686]
+          - text: XAUT_USDT
+        - generic [ref=e687] [cursor=pointer]:
+          - checkbox "XLM_USDT" [ref=e688]
+          - text: XLM_USDT
+        - generic [ref=e689] [cursor=pointer]:
+          - checkbox "XMR_USDT" [ref=e690]
+          - text: XMR_USDT
+        - generic [ref=e691] [cursor=pointer]:
+          - checkbox "XOMSTOCK_USDT" [ref=e692]
+          - text: XOMSTOCK_USDT
+        - generic [ref=e693] [cursor=pointer]:
+          - checkbox "XPD_USDT" [ref=e694]
+          - text: XPD_USDT
+        - generic [ref=e695] [cursor=pointer]:
+          - checkbox "XPL_USDT" [ref=e696]
+          - text: XPL_USDT
+        - generic [ref=e697] [cursor=pointer]:
+          - checkbox "XPT_USDT" [ref=e698]
+          - text: XPT_USDT
+        - generic [ref=e699] [cursor=pointer]:
+          - checkbox "XRP_USDT" [ref=e700]
+          - text: XRP_USDT
+        - generic [ref=e701] [cursor=pointer]:
+          - checkbox "ZEC_USDT" [ref=e702]
+          - text: ZEC_USDT
+        - generic [ref=e703] [cursor=pointer]:
+          - checkbox "ZEN_USDT" [ref=e704]
+          - text: ZEN_USDT
+        - generic [ref=e705] [cursor=pointer]:
+          - checkbox "ZINC_USDT" [ref=e706]
+          - text: ZINC_USDT
+        - generic [ref=e707] [cursor=pointer]:
+          - checkbox "ZRO_USDT" [ref=e708]
+          - text: ZRO_USDT
+      - button "Save selection" [ref=e710] [cursor=pointer]
+      - generic [ref=e711]: Risk
+      - generic [ref=e712]:
+        - generic [ref=e713]: K (max positions)
+        - spinbutton [ref=e714]: "3"
+      - generic [ref=e715]:
+        - generic [ref=e716]: Margin per slot %
+        - spinbutton [ref=e717]: "0.25"
+      - generic [ref=e718]:
+        - generic [ref=e719]: Leverage mode
+        - combobox [ref=e720]:
+          - option "max"
+          - option "fixed" [selected]
+      - generic [ref=e721]:
+        - generic [ref=e722]: Fixed leverage
+        - spinbutton [ref=e723]: "100"
+      - generic [ref=e724]:
+        - generic [ref=e725]: Daily loss kill %
+        - spinbutton [ref=e726]: "0.15"
+      - generic [ref=e727]:
+        - generic [ref=e728]: Max DD kill %
+        - spinbutton [ref=e729]: "0.5"
+      - generic [ref=e730]: Strategy
+      - generic [ref=e731]:
+        - generic [ref=e732]: Entry z
+        - spinbutton [ref=e733]: "1.8"
+      - generic [ref=e734]:
+        - generic [ref=e735]: Cancel z
+        - spinbutton [ref=e736]: "0.5"
+      - generic [ref=e737]:
+        - generic [ref=e738]: Hard SL %
+        - spinbutton [ref=e739]: "0.004"
+      - generic [ref=e740]:
+        - generic [ref=e741]: Max hold sec
+        - spinbutton [ref=e742]: "300"
+      - generic [ref=e743]: Universe
+      - generic [ref=e744]:
+        - generic [ref=e745]: Max symbols
+        - spinbutton [ref=e746]: "60"
+      - generic [ref=e747]:
+        - generic [ref=e748]: Refresh sec
+        - spinbutton [ref=e749]: "300"
+      - generic [ref=e750]:
+        - generic [ref=e751]: Paper start balance
+        - spinbutton [ref=e752]: "1000"
+      - generic [ref=e753]:
+        - button "Save" [ref=e754] [cursor=pointer]
+        - button "Refresh universe" [ref=e755] [cursor=pointer]

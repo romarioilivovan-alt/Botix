@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from .models import UserAccount
@@ -9,6 +10,7 @@ from .mexc_api import MexcFuturesAPI
 class MexcTrader:
     def __init__(self, account: UserAccount, proxy: Optional[str] = None):
         self.api = MexcFuturesAPI(account, proxy=proxy)
+        self._contract_detail_cache: Dict[str, tuple[Dict[str, Any], float]] = {}
 
     async def close(self) -> None:
         await self.api.close()
@@ -16,6 +18,13 @@ class MexcTrader:
     async def get_available_usdt(self) -> float:
         v = await self.api.get_available_usdt()
         return float(v or 0.0)
+
+    async def get_usdt_balance_snapshot(self) -> Dict[str, float]:
+        snap = await self.api.get_usdt_balance_snapshot()
+        return {
+            "available": float(snap.get("available") or 0.0),
+            "equity": float(snap.get("equity") or 0.0),
+        }
 
     async def get_positions_raw(self) -> List[Dict[str, Any]]:
         res = await self.api.get_positions()
@@ -25,8 +34,40 @@ class MexcTrader:
                 return [x for x in data if isinstance(x, dict)]
         return []
 
-    async def get_contract_detail(self, symbol_full: str) -> Optional[Dict[str, Any]]:
+    async def get_history_positions(
+        self,
+        symbol_full: Optional[str] = None,
+        position_type: Optional[int] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: int = 50,
+        page_num: int = 1,
+    ) -> List[Dict[str, Any]]:
+        res = await self.api.get_history_positions(
+            symbol=symbol_full,
+            position_type=position_type,
+            start_time=start_time,
+            end_time=end_time,
+            page_num=page_num,
+            page_size=limit,
+        )
+        if not res.get("success"):
+            return []
+        data = res.get("data") or []
+        if isinstance(data, dict):
+            data = data.get("resultList") or data.get("data") or []
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        return []
+
+    async def get_contract_detail(self, symbol_full: str, ttl: float = 60.0) -> Optional[Dict[str, Any]]:
         sym = symbol_full if "_" in symbol_full else f"{symbol_full}_USDT"
+        now = time.monotonic()
+        cached = self._contract_detail_cache.get(sym)
+        if cached is not None:
+            item, ts = cached
+            if now - ts < ttl:
+                return dict(item)
         data = await self.api._request_market(f"api/v1/contract/detail?symbol={sym}")
         if not data.get("success"):
             return None
@@ -35,7 +76,8 @@ class MexcTrader:
             raw = raw[0] if raw else None
         if not isinstance(raw, dict):
             return None
-        return raw
+        self._contract_detail_cache[sym] = (dict(raw), now)
+        return dict(raw)
 
     async def is_zero_fee_symbol(self, symbol_full: str) -> bool:
         """Live check: symbol must currently have 0 trading fee.
@@ -278,6 +320,41 @@ class MexcTrader:
             margin_mode=margin_mode,
         )
 
+    async def open_ioc(
+        self,
+        symbol_full: str,
+        side: str,
+        notional_usdt: float,
+        leverage: int,
+        price: float,
+        margin_mode: int = 1,
+    ) -> Dict[str, Any]:
+        """IOC entry (orderType=3) to mirror paper's taker_ioc simulation."""
+        symbol = symbol_full.replace("_USDT", "")
+        side_code = 1 if side.upper() == "LONG" else 3
+        vol = await self.api.calc_volume_from_usdt(
+            symbol,
+            notional_usdt,
+            price_override=price,
+            side=side_code,
+        )
+        if vol is None or vol <= 0:
+            return {"success": False, "message": "Could not calc volume"}
+        resp = await self.api.create_order(
+            symbol,
+            side=side_code,
+            order_type="3",
+            price=float(price),
+            vol=float(vol),
+            leverage=int(leverage),
+            margin_mode=margin_mode,
+        )
+        if isinstance(resp, dict):
+            resp.setdefault("_requested_vol", float(vol))
+            resp.setdefault("_requested_notional", float(notional_usdt))
+            resp.setdefault("_requested_price", float(price))
+        return resp
+
     async def open_limit(
         self,
         symbol_full: str,
@@ -310,11 +387,7 @@ class MexcTrader:
 
     async def query_order(self, order_id: int) -> Dict[str, Any]:
         """Best-effort order state lookup."""
-        return await self.api._request(
-            "GET",
-            "private/order/batch_query",
-            params={"order_ids": str(int(order_id))},
-        )
+        return await self.api.get_order(int(order_id))
 
     async def close_market(
         self,

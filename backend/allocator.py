@@ -38,6 +38,7 @@ class CapitalAllocator:
         book_top_notional: float,
         margin_pct_override: Optional[float] = None,
         leverage_override: Optional[int] = None,
+        max_notional_override: Optional[float] = None,
     ) -> AllocationDecision:
         # Kill switch / engine off
         if state.kill_switch:
@@ -59,10 +60,15 @@ class CapitalAllocator:
         if balance_free < float(self.cfg.risk.min_balance_usdt):
             return AllocationDecision(False, "low_balance")
 
+        share_pct = float(getattr(self.cfg.risk, "account_share_pct", 1.0) or 1.0)
+        share_pct = min(1.0, max(0.0, share_pct))
+        usable_balance = balance_free * share_pct
+
         # Margin per slot (per-symbol override takes precedence)
         margin_pct = margin_pct_override if margin_pct_override is not None else float(self.cfg.risk.margin_pct_per_slot)
-        margin = balance_free * margin_pct
-        if margin < float(self.cfg.risk.min_balance_usdt):
+        margin = usable_balance * margin_pct
+        min_trade_margin = float(getattr(self.cfg.risk, "min_trade_margin_usdt", self.cfg.risk.min_balance_usdt) or 0.0)
+        if margin < min_trade_margin:
             return AllocationDecision(False, "tiny_margin")
 
         # Leverage (per-symbol override takes precedence)
@@ -81,6 +87,20 @@ class CapitalAllocator:
         cap = float(self.cfg.risk.book_depth_consume_pct) * float(book_top_notional or 0.0)
         if cap > 0 and notional > cap:
             notional = cap
+            margin = notional / lev
+
+        # Optional hard cap by configured notional limit.
+        global_notional_cap = float(getattr(self.cfg.risk, "max_notional_usdt", 0.0) or 0.0)
+        symbol_notional_cap = float(max_notional_override or 0.0)
+        notional_cap = 0.0
+        if global_notional_cap > 0 and symbol_notional_cap > 0:
+            notional_cap = min(global_notional_cap, symbol_notional_cap)
+        elif global_notional_cap > 0:
+            notional_cap = global_notional_cap
+        elif symbol_notional_cap > 0:
+            notional_cap = symbol_notional_cap
+        if notional_cap > 0 and notional > notional_cap:
+            notional = notional_cap
             margin = notional / lev
 
         if notional <= 0 or margin <= 0:

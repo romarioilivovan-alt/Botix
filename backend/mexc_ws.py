@@ -67,8 +67,8 @@ class MexcMultiWS:
                 return
             try:
                 await self._ws.send(json.dumps({
-                    "method": "sub.depth",
-                    "param": {"symbol": sym},
+                    "method": "sub.depth.full",
+                    "param": {"symbol": sym, "limit": 20},
                     "gzip": False,
                 }))
                 self._subscribed.add(sym)
@@ -81,8 +81,8 @@ class MexcMultiWS:
                 return
             try:
                 await self._ws.send(json.dumps({
-                    "method": "unsub.depth",
-                    "param": {"symbol": sym},
+                    "method": "unsub.depth.full",
+                    "param": {"symbol": sym, "limit": 20},
                 }))
                 self._subscribed.discard(sym)
             except Exception:
@@ -100,6 +100,7 @@ class MexcMultiWS:
                     ping_interval=20,
                     ping_timeout=20,
                     max_size=4_000_000,
+                    compression=None,
                 ) as ws:
                     self._ws = ws
                     self._connected = True
@@ -124,7 +125,7 @@ class MexcMultiWS:
                             msg = json.loads(raw)
                         except Exception:
                             continue
-                        if msg.get("channel") == "push.depth":
+                        if msg.get("channel") in {"push.depth", "push.depth.full"}:
                             payload = msg.get("data") or {}
                             sym = msg.get("symbol") or payload.get("symbol")
                             bids = payload.get("bids") or payload.get("b") or []

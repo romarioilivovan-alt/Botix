@@ -158,8 +158,23 @@ class Engine:
         if isinstance(self.executor, RealExecutor) and self.trader is not None:
             try:
                 raw_list = await self.trader.get_positions_raw()
+                allowed_symbols = {
+                    str(sym or "").upper()
+                    for sym in (self.state.universe or [])
+                    if str(sym or "").strip()
+                }
+                managed_symbols = {
+                    str(sym or "").upper()
+                    for sym in self.state.positions.keys()
+                    if str(sym or "").strip()
+                }
+                target_symbols = managed_symbols or allowed_symbols
+                scoped_raw = []
                 for p in raw_list:
                     sym = str(p.get("symbol") or "").upper()
+                    if target_symbols and sym not in target_symbols:
+                        continue
+                    scoped_raw.append(p)
                     side = "LONG" if int(p.get("positionType") or 0) == 1 else "SHORT"
                     hold = float(p.get("holdVol") or 0.0)
                     lev = int(float(p.get("leverage") or 1))
@@ -169,7 +184,7 @@ class Engine:
                         except Exception:
                             pass
                 # cancel all open orders
-                for sym in {str(p.get("symbol") or "").upper() for p in raw_list}:
+                for sym in {str(p.get("symbol") or "").upper() for p in scoped_raw}:
                     try:
                         await self.trader.cancel_all_for(sym)
                     except Exception:
@@ -225,12 +240,25 @@ class Engine:
     async def _configure_universe(self, working_set: List[str]) -> None:
         m2b: Dict[str, Optional[str]] = {}
         factors: Dict[str, float] = {}
+        contract_sizes: Dict[str, float] = {}
         for sym in working_set:
             ref = self.universe.reference_for(sym) if self.universe else None
             m2b[sym] = ref
             if self.universe:
                 factors[sym] = self.universe.price_factor_for(sym)
-        self.aggregator.configure_symbols(m2b, price_factors=factors)
+            size = 1.0
+            if self.trader is not None:
+                try:
+                    detail = await self.trader.get_contract_detail(sym)
+                    size = float((detail or {}).get("contractSize") or 1.0)
+                except Exception:
+                    size = 1.0
+            contract_sizes[sym] = size if size > 0 else 1.0
+        self.aggregator.configure_symbols(
+            m2b,
+            price_factors=factors,
+            contract_sizes=contract_sizes,
+        )
         async with self.state.lock:
             self.state.universe = list(working_set)
             self.state.universe_refs = {k: v for k, v in m2b.items() if v}
@@ -352,17 +380,15 @@ class Engine:
                         continue
                     last_emit_ts[sym] = now
 
-                    # Always log candidate for analysis
-                    try:
-                        await self.store.insert_candidate(
-                            now, sym, opp.side, opp.score, opp.z, st.spread_bps,
-                            st.fair, st.mexc_mid, st.mexc_book_top10_notional,
-                            None, accepted=True,
-                        )
-                    except Exception:
-                        pass
-
                     if self.executor is None:
+                        try:
+                            await self.store.insert_candidate(
+                                now, sym, opp.side, opp.score, opp.z, st.spread_bps,
+                                st.fair, st.mexc_mid, st.mexc_book_top10_notional,
+                                None, accepted=True,
+                            )
+                        except Exception:
+                            pass
                         # logger mode: just log
                         await self.state.add_log(
                             "info",
@@ -374,6 +400,16 @@ class Engine:
                         await self.executor.on_signal(opp)
                     except Exception as e:
                         logger.warning("executor.on_signal error: %s", e)
+                    # Persist accepted candidates after the executor has seen the
+                    # signal so analytics do not sit on the trade-critical path.
+                    try:
+                        await self.store.insert_candidate(
+                            now, sym, opp.side, opp.score, opp.z, st.spread_bps,
+                            st.fair, st.mexc_mid, st.mexc_book_top10_notional,
+                            None, accepted=True,
+                        )
+                    except Exception:
+                        pass
                     emitted += 1
                     if emitted >= 10:
                         break
@@ -386,4 +422,4 @@ class Engine:
             except Exception as e:
                 logger.exception("scoring loop error: %s", e)
 
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(max(0.05, float(getattr(self.cfg.strategy, "paper_tick_sec", 0.2) or 0.2)))

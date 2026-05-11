@@ -29,7 +29,20 @@ def to_binance(mexc: str) -> str:
     return mexc.replace("_", "").upper()
 
 
-def resolve_binance_symbol(mexc: str, binance_set: set) -> tuple:
+def _price_factor_for_variant(mexc: str, binance_symbol: str) -> float:
+    base = to_binance(mexc)
+    if not binance_symbol or binance_symbol == base:
+        return 1.0
+    if binance_symbol.endswith(base):
+        prefix = binance_symbol[: -len(base)]
+        if prefix.isdigit():
+            mult = int(prefix)
+            if mult > 0:
+                return 1.0 / mult
+    return 1.0
+
+
+def resolve_binance_symbol(mexc: str, binance_set: set, alias_map: Optional[Dict[str, str]] = None) -> tuple:
     """Try multiple Binance symbol variants for a given MEXC symbol.
 
     Returns (binance_symbol, price_factor) where price_factor is the multiplier
@@ -37,6 +50,9 @@ def resolve_binance_symbol(mexc: str, binance_set: set) -> tuple:
     e.g. 1000PEPEUSDT price × 0.001 = PEPE_USDT fair price.
     """
     base = to_binance(mexc)
+    alias = str((alias_map or {}).get(mexc.upper()) or "").upper().strip()
+    if alias and alias in binance_set:
+        return alias, _price_factor_for_variant(mexc, alias)
     if base in binance_set:
         return base, 1.0
     # Try 1000-prefix variant (common for micro-cap coins)
@@ -127,6 +143,11 @@ class UniverseManager:
         async with self._lock:
             zero_fee = await self._safe_zero_fee_list()
             binance_set = await self._safe_binance_set()
+            alias_map = {
+                str(k or "").upper().strip(): str(v or "").upper().strip()
+                for k, v in (getattr(self.cfg, "binance_symbol_overrides", {}) or {}).items()
+                if str(k or "").strip() and str(v or "").strip()
+            }
 
             entries: Dict[str, UniverseEntry] = {}
 
@@ -139,7 +160,7 @@ class UniverseManager:
                     norm = f"{norm}_USDT"
                 if norm in entries:
                     continue
-                bsym, bfactor = resolve_binance_symbol(norm, binance_set)
+                bsym, bfactor = resolve_binance_symbol(norm, binance_set, alias_map)
                 has_ref = bsym is not None
                 entries[norm] = UniverseEntry(
                     mexc_symbol=norm,
@@ -151,7 +172,7 @@ class UniverseManager:
             for sym in zero_fee:
                 if sym in entries:
                     continue
-                bsym, bfactor = resolve_binance_symbol(sym, binance_set)
+                bsym, bfactor = resolve_binance_symbol(sym, binance_set, alias_map)
                 has_ref = bsym is not None
                 entries[sym] = UniverseEntry(
                     mexc_symbol=sym,
@@ -216,7 +237,7 @@ class UniverseManager:
                 quote = str(it.get("quoteAsset") or "").upper()
                 if quote != "USDT":
                     continue
-                if contract_type and contract_type != "PERPETUAL":
+                if contract_type and contract_type not in {"PERPETUAL", "TRADIFI_PERPETUAL"}:
                     continue
                 out.add(sym)
             self._binance_set = out

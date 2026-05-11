@@ -81,10 +81,21 @@ class Store:
     def __init__(self, db_path: Path = DB_PATH) -> None:
         self.path = db_path
         self._db: Optional[aiosqlite.Connection] = None
+        self._managed_positions_path = self.path.parent / "managed_positions.json"
 
     async def open(self) -> None:
         self._db = await aiosqlite.connect(str(self.path))
         self._db.row_factory = aiosqlite.Row
+        for pragma in (
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA temp_store=MEMORY",
+            "PRAGMA busy_timeout=3000",
+        ):
+            try:
+                await self._db.execute(pragma)
+            except Exception:
+                pass
         await self._db.executescript(SCHEMA)
         # Migrations for columns added after initial release
         for migration in (
@@ -165,6 +176,57 @@ class Store:
              blocked, 1 if accepted else 0),
         )
         await self._db.commit()
+
+    def _load_managed_positions_blob(self) -> Dict[str, Any]:
+        try:
+            raw = json.loads(self._managed_positions_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except Exception:
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _save_managed_positions_blob(self, payload: Dict[str, Any]) -> None:
+        self._managed_positions_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._managed_positions_path.with_suffix(".json.tmp")
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        tmp_path.replace(self._managed_positions_path)
+
+    async def list_managed_positions(self, mode: str) -> Dict[str, Dict[str, Any]]:
+        data = self._load_managed_positions_blob()
+        bucket = data.get(str(mode or "").strip().lower()) or {}
+        return dict(bucket) if isinstance(bucket, dict) else {}
+
+    async def get_managed_position(self, mode: str, symbol: str) -> Optional[Dict[str, Any]]:
+        bucket = await self.list_managed_positions(mode)
+        item = bucket.get(str(symbol or "").upper())
+        return dict(item) if isinstance(item, dict) else None
+
+    async def upsert_managed_position(self, mode: str, symbol: str, payload: Dict[str, Any]) -> None:
+        data = self._load_managed_positions_blob()
+        mode_key = str(mode or "").strip().lower()
+        bucket = data.get(mode_key)
+        if not isinstance(bucket, dict):
+            bucket = {}
+        bucket[str(symbol or "").upper()] = dict(payload or {})
+        data[mode_key] = bucket
+        self._save_managed_positions_blob(data)
+
+    async def delete_managed_position(self, mode: str, symbol: str) -> None:
+        data = self._load_managed_positions_blob()
+        mode_key = str(mode or "").strip().lower()
+        bucket = data.get(mode_key)
+        if not isinstance(bucket, dict):
+            return
+        bucket.pop(str(symbol or "").upper(), None)
+        if bucket:
+            data[mode_key] = bucket
+        else:
+            data.pop(mode_key, None)
+        self._save_managed_positions_blob(data)
 
     # ---------- reads ----------
 

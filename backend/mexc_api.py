@@ -7,7 +7,7 @@ import random
 import string
 import math
 import asyncio
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Tuple
 import re
 from urllib.parse import urlparse
 from decimal import Decimal
@@ -70,12 +70,32 @@ class MexcSignatureGenerator:
 
 class MexcFuturesAPI:
     CONTRACT_BASE_URL = "https://contract.mexc.com"
+    _HOT_PRIVATE_ENDPOINTS = {
+        "private/account/assets",
+        "private/position/open_positions",
+        "private/position/leverage",
+        "private/order/create",
+        "private/order/cancel_all",
+        "private/order/batch_query",
+    }
+    _HOT_PRIVATE_PREFIXES = (
+        "private/order/get/",
+        "private/order/cancel",
+        "private/stoporder/place",
+        "private/stoporder/change_plan_price",
+    )
+    _BACKGROUND_PRIVATE_PREFIXES = (
+        "private/position/list/history_positions",
+        "private/order/list/open_orders",
+        "private/stoporder/open_orders",
+    )
 
     def __init__(self, account: UserAccount, proxy: Optional[str] = None):
         self.base_url = "https://www.mexc.com/api/platform/futures/api/v1"
         self.account = account
         self.sg = MexcSignatureGenerator(account.uid)
         self.session: Optional[aiohttp.ClientSession] = None
+        self.trade_session: Optional[aiohttp.ClientSession] = None
 
         # Derive a stable per-account mhash when not provided.
         # MEXC web uses `mhash` as a query/body param for some private endpoints.
@@ -95,6 +115,45 @@ class MexcFuturesAPI:
         )
         # что реально уходит в aiohttp.request(proxy=...)
         self._session_proxy: Optional[str] = None
+        self._trade_session_proxy: Optional[str] = None
+
+    def _build_connector(self) -> Tuple[aiohttp.BaseConnector, Optional[str]]:
+        proxy_for_request: Optional[str] = None
+
+        if self.proxy:
+            parsed = urlparse(self.proxy)
+            scheme = (parsed.scheme or "").lower()
+
+            if scheme in ("socks4", "socks5", "socks5h"):
+                if ProxyConnector is None:
+                    raise RuntimeError(
+                        "Ð”Ð»Ñ Ð¸ÑÐ¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ð½Ð¸Ñ SOCKS-Ð¿Ñ€Ð¾ÐºÑÐ¸ ÑƒÑÑ‚Ð°Ð½Ð¾Ð²Ð¸ Ð¿Ð°ÐºÐµÑ‚ "
+                        "`aiohttp_socks` (pip install aiohttp_socks)."
+                    )
+                connector: aiohttp.BaseConnector = ProxyConnector.from_url(self.proxy, ssl=False)
+            else:
+                connector = aiohttp.TCPConnector(
+                    ssl=False,
+                    resolver=aiohttp.ThreadedResolver(),
+                    ttl_dns_cache=300,
+                    keepalive_timeout=30,
+                    limit=100,
+                    limit_per_host=16,
+                    enable_cleanup_closed=True,
+                )
+                proxy_for_request = self.proxy
+        else:
+            connector = aiohttp.TCPConnector(
+                ssl=False,
+                resolver=aiohttp.ThreadedResolver(),
+                ttl_dns_cache=300,
+                keepalive_timeout=30,
+                limit=100,
+                limit_per_host=16,
+                enable_cleanup_closed=True,
+            )
+
+        return connector, proxy_for_request
 
     async def _ensure_session(self) -> None:
         if self.session is not None and not self.session.closed:
@@ -142,16 +201,43 @@ class MexcFuturesAPI:
             )
             self._session_proxy = proxy_for_request
 
+    async def _ensure_trade_session(self) -> None:
+        if self.trade_session is not None and not self.trade_session.closed:
+            conn = getattr(self.trade_session, "_connector", None)
+            if conn is not None and not getattr(conn, "closed", False):
+                return
+            try:
+                await self.trade_session.close()
+            except Exception:
+                pass
+            self.trade_session = None
+
+        if self.trade_session is None or self.trade_session.closed:
+            timeout = aiohttp.ClientTimeout(total=10)
+            connector, proxy_for_request = self._build_connector()
+            self.trade_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout,
+            )
+            self._trade_session_proxy = proxy_for_request
+
     async def __aenter__(self) -> "MexcFuturesAPI":
         await self._ensure_session()
+        await self._ensure_trade_session()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self.trade_session and not self.trade_session.closed:
+            await self.trade_session.close()
+        self.trade_session = None
         if self.session and not self.session.closed:
             await self.session.close()
         self.session = None
 
     async def close(self) -> None:
+        if self.trade_session and not self.trade_session.closed:
+            await self.trade_session.close()
+        self.trade_session = None
         if self.session and not self.session.closed:
             await self.session.close()
         self.session = None
@@ -177,6 +263,36 @@ class MexcFuturesAPI:
         logger.warning("Unexpected %s data format: %s - %r", what, type(data), data)
         return {"success": True, "message": "", "data": []}
 
+    def _is_hot_private_endpoint(self, endpoint: str) -> bool:
+        endpoint = str(endpoint or "")
+        if endpoint in self._HOT_PRIVATE_ENDPOINTS:
+            return True
+        if endpoint.startswith(self._BACKGROUND_PRIVATE_PREFIXES):
+            return False
+        if endpoint.startswith(self._HOT_PRIVATE_PREFIXES):
+            return True
+        return endpoint.startswith("private/")
+
+    def _normalize_order_lookup_response(self, raw: Dict) -> Dict:
+        if not raw.get("success"):
+            return {
+                "success": False,
+                "message": raw.get("message", "Unknown error"),
+                "data": [],
+                "code": raw.get("code", 0),
+            }
+        data = raw.get("data")
+        if isinstance(data, dict):
+            data = [data]
+        elif not isinstance(data, list):
+            data = []
+        return {
+            "success": True,
+            "message": raw.get("message", ""),
+            "data": data,
+            "code": raw.get("code", 0),
+        }
+
     async def _request(
         self,
         method: str,
@@ -185,8 +301,14 @@ class MexcFuturesAPI:
         params: Optional[Dict[str, Any]] = None,
         need_captcha: bool = False,
     ) -> Dict:
-        await self._ensure_session()
-        assert self.session is not None
+        hot_private = self._is_hot_private_endpoint(endpoint)
+        if hot_private:
+            await self._ensure_trade_session()
+        else:
+            await self._ensure_session()
+        session = self.trade_session if hot_private else self.session
+        proxy = self._trade_session_proxy if hot_private else self._session_proxy
+        assert session is not None
         url = f"{self.base_url}/{endpoint}"
         timestamp, signature = self.sg.generate_signature(method, endpoint, data)
         headers = {
@@ -222,21 +344,16 @@ class MexcFuturesAPI:
             except Exception:
                 headers["mtoken"] = "".join(random.choice("0123456789abcdef") for _ in range(32))
         body = json.dumps(data, separators=(",", ":")) if data is not None else None
+        started_at = time.monotonic()
+        log_level = logging.DEBUG if self._is_hot_private_endpoint(endpoint) else logging.INFO
         try:
-            logger.info(
-                "MEXC _request %s %s (proxy=%r, account=%s)",
-                method,
-                url,
-                self.proxy,
-                self.account.uid,
-            )
-            async with self.session.request(
+            async with session.request(
                 method=method,
                 url=url,
                 headers=headers,
                 data=body,
                 params=params,
-                proxy=self._session_proxy,
+                proxy=proxy,
             ) as response:
                 text = await response.text()
                 try:
@@ -249,9 +366,21 @@ class MexcFuturesAPI:
                         text[:500],
                     )
                     return {"success": False, "message": text}
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                if logger.isEnabledFor(log_level):
+                    logger.log(
+                        log_level,
+                        "MEXC _request %s %s -> success=%s code=%s latency=%dms",
+                        method,
+                        endpoint,
+                        result.get("success"),
+                        result.get("code"),
+                        elapsed_ms,
+                    )
                 return result
         except Exception as e:
-            logger.error("Request error: %s", e)
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            logger.error("Request error on %s %s after %dms: %s", method, endpoint, elapsed_ms, e)
             return {"success": False, "message": str(e)}
 
     async def _request_market(self, path: str) -> Dict:
@@ -259,12 +388,13 @@ class MexcFuturesAPI:
         assert self.session is not None
         url = f"{self.CONTRACT_BASE_URL}/{path.lstrip('/')}"
         try:
-            logger.info(
-                "MEXC _request_market %s (proxy=%r, account=%s)",
-                url,
-                self.proxy,
-                self.account.uid,
-            )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "MEXC _request_market %s (proxy=%r, account=%s)",
+                    url,
+                    self.proxy,
+                    self.account.uid,
+                )
             async with self.session.get(
                 url,
                 proxy=self._session_proxy,
@@ -539,7 +669,7 @@ class MexcFuturesAPI:
         if side in (2, 4):
             payload["flashClose"] = True
 
-        if price is not None and order_type == "2":  # LIMIT
+        if price is not None and str(order_type) in {"1", "2", "3", "4", "6"}:
             payload["price"] = str(price)
 
         log_payload = {
@@ -586,12 +716,8 @@ class MexcFuturesAPI:
         # небольшая пауза, чтобы ордер успел проматчиться
         await asyncio.sleep(0.01)
 
-        detail_raw = await self._request(
-            method="GET",
-            endpoint="private/order/batch_query",
-            params={"order_ids": str(order_id)},
-        )
-        logger.info("Order batch_query response (%s): %s", order_id, detail_raw)
+        detail_raw = await self.get_order(int(order_id))
+        logger.debug("Order lookup response (%s): %s", order_id, detail_raw)
 
         if not detail_raw.get("success"):
             return resp
@@ -980,8 +1106,82 @@ class MexcFuturesAPI:
 
     async def get_positions(self) -> Dict:
         raw = await self._request("GET", "private/position/open_positions")
-        logger.info("Positions API response: %s", raw)
+        logger.debug("Positions API response: %s", raw)
         return self._normalize_list_response(raw, what="positions")
+
+    async def get_order(self, order_id: int) -> Dict:
+        raw = await self._request("GET", f"private/order/get/{int(order_id)}")
+        return self._normalize_order_lookup_response(raw)
+
+    def _extract_usdt_balance_snapshot(self, data: Any) -> Optional[Dict[str, float]]:
+        if not isinstance(data, list):
+            logger.warning(
+                "Unexpected account data format in balance snapshot: %r", data
+            )
+            return None
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            cur = str(item.get("currency") or item.get("asset") or "").upper()
+            if cur != "USDT":
+                continue
+
+            available = 0.0
+            equity = None
+
+            available_keys = [
+                "availableBalance",
+                "availableCash",
+                "availableOpen",
+                "available",
+                "availableMargin",
+                "marginAvailable",
+                "maxAvailable",
+                "positionMarginFree",
+                "balance",
+            ]
+            equity_keys = [
+                "equity",
+                "balance",
+            ]
+
+            for key in available_keys:
+                if key in item and item[key] is not None:
+                    try:
+                        val = float(item[key])
+                    except Exception:
+                        continue
+                    if val > available:
+                        available = val
+
+            for key in equity_keys:
+                if key in item and item[key] is not None:
+                    try:
+                        val = float(item[key])
+                    except Exception:
+                        continue
+                    equity = val
+                    break
+
+            if equity is None:
+                equity = available
+
+            return {
+                "available": max(0.0, float(available or 0.0)),
+                "equity": max(0.0, float(equity or 0.0)),
+            }
+
+        return {"available": 0.0, "equity": 0.0}
+
+    async def get_usdt_balance_snapshot(self) -> Dict[str, float]:
+        info = await self.get_account_info()
+        if not info.get("success"):
+            return {"available": 0.0, "equity": 0.0}
+        snap = self._extract_usdt_balance_snapshot(info.get("data") or [])
+        if not snap:
+            return {"available": 0.0, "equity": 0.0}
+        return snap
 
     async def get_available_usdt(self) -> Optional[float]:
         """
@@ -1404,4 +1604,3 @@ class MexcFuturesAPI:
         if code is not None:
             return f"ошибка MEXC (код {code}): {msg or 'неизвестная ошибка'}"
         return f"ошибка MEXC: {msg or 'неизвестная ошибка'}"
-

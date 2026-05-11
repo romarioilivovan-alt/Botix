@@ -1,0 +1,106 @@
+{
+  "mode": "paper",
+  "autostart": false,
+  "host": "127.0.0.1",
+  "port": 8081,
+  "mexc_web": {
+    "web_uid": "",
+    "device_id": "",
+    "mhash": ""
+  },
+  "universe": {
+    "include_only": [
+      "PEPE_USDT",
+      "NVIDIA_USDT",
+      "MSTRSTOCK_USDT"
+    ],
+    "force_include_symbols": [
+      "PEPE_USDT",
+      "NVIDIA_USDT",
+      "MSTRSTOCK_USDT"
+    ],
+    "exclude": [],
+    "require_binance_ref": true,
+    "refresh_sec": 300,
+    "max_symbols": 3,
+    "min_book_notional_usdt": 5000
+  },
+  "strategy": {
+    "algorithm": "raw_momentum",
+    "algo_mode": "ANY",
+    "invert": false,
+    "taker_entry": true,
+    "entry_latency_ms": 180,
+    "exit_latency_ms": 200,
+    "taker_fee_bps": 0.0,
+    "maker_fee_bps": 0.0,
+    "raw_momentum_min_bps": 3.0,
+    "raw_momentum_max_bps": 25.0,
+    "raw_momentum_window_sec": 1.0,
+    "raw_momentum_require_5s_agree": false,
+    "raw_momentum_anti_fade_30s_bps": 0.0,
+    "min_spread_samples": 30,
+    "min_sigma_bps": 0.3,
+    "min_book_depth_usdt": 10000,
+    "require_ofi_alignment": false,
+    "sigma_spread_window_sec": 30.0,
+    "ofi_window_sec": 0.5,
+    "fair_velocity_window_sec": 1.0,
+    "hard_sl_margin_pct": 0.0,
+    "hard_sl_pct": 0.0,
+    "sl_pct_crypto": 0.0030,
+    "sl_pct_stocks": 0.0012,
+    "max_hold_sec": 12.0,
+    "cooldown_min_sec": 2.0,
+    "cooldown_max_sec": 5.0
+  },
+  "risk": {
+    "max_concurrent_positions": 1,
+    "margin_pct_per_slot": 0.35,
+    "leverage_mode": "fixed",
+    "fixed_leverage": 100,
+    "book_depth_consume_pct": 0.03,
+    "daily_loss_pct_kill": 0.15,
+    "max_drawdown_pct_kill": 0.2,
+    "min_balance_usdt": 5.0
+  },
+  "paper_starting_balance": 50.0,
+  "symbol_overrides": [
+    {
+      "symbol": "PEPE_USDT",
+      "enabled": true,
+      "leverage": 100,
+      "margin_pct": 0.3,
+      "sl_pct": 0.0035,
+      "max_hold_sec": 12.0,
+      "algorithms": [
+        "raw_momentum"
+      ],
+      "algo_mode": "ANY"
+    },
+    {
+      "symbol": "NVIDIA_USDT",
+      "enabled": true,
+      "leverage": 100,
+      "margin_pct": 0.45,
+      "sl_pct": 0.0012,
+      "max_hold_sec": 8.0,
+      "algorithms": [
+        "raw_momentum"
+      ],
+      "algo_mode": "ANY"
+    },
+    {
+      "symbol": "MSTRSTOCK_USDT",
+      "enabled": true,
+      "leverage": 100,
+      "margin_pct": 0.45,
+      "sl_pct": 0.0012,
+      "max_hold_sec": 8.0,
+      "algorithms": [
+        "raw_momentum"
+      ],
+      "algo_mode": "ANY"
+    }
+  ]
+}

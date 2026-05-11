@@ -42,8 +42,9 @@ function fmtTime(ts) {
 
 // ============== state ==============
 let cfg = null;
-const STOCK_SYMBOLS = new Set(["NVDA_USDT","MSTR_USDT","TSLA_USDT","INTC_USDT"]);
+const STOCK_SYMBOLS = new Set(["NVIDIA_USDT","MSTRSTOCK_USDT","TSLA_USDT","INTC_USDT","NVDA_USDT","MSTR_USDT"]);
 let candidateFilter = 'all';
+let wsConnected = false;
 
 // ============== chart (equity) ==============
 function drawEquity(canvas, data) {
@@ -159,14 +160,40 @@ function renderPositions(items) {
   $('openCount').textContent = items.length;
 }
 
+function normalizeTrade(t) {
+  let extra = {};
+  if (t && typeof t.extra === 'string') {
+    try { extra = JSON.parse(t.extra) || {}; } catch {}
+  } else if (t && typeof t.extra === 'object' && t.extra) {
+    extra = t.extra;
+  }
+  return {
+    ts: t?.ts ?? t?.close_ts ?? 0,
+    symbol: t?.symbol ?? '-',
+    side: t?.side ?? '-',
+    entry: t?.entry,
+    exit: t?.exit,
+    pnl: t?.pnl ?? t?.pnl_usdt,
+    pnl_pct: t?.pnl_pct,
+    reason: t?.reason ?? t?.close_reason,
+    duration: t?.duration ?? t?.duration_sec,
+    price_source: t?.price_source ?? extra.price_source,
+  };
+}
+
 function renderTrades(items) {
   const tbody = $('tradesTable').querySelector('tbody');
   tbody.innerHTML = '';
-  const recent = [...items].reverse();
-  for (const t of recent.slice(0, 50)) {
+  const recent = (items || [])
+    .map(normalizeTrade)
+    .filter(t => t.symbol && t.symbol !== '-')
+    .sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0))
+    .slice(0, 50);
+  for (const t of recent) {
     const tr = document.createElement('tr');
     const pnlCls = t.pnl > 0 ? 'green' : t.pnl < 0 ? 'red' : '';
     const sideCls = t.side === 'LONG' ? 'green' : 'red';
+    const reasonText = t.price_source ? `${t.reason || '-'} / ${t.price_source}` : (t.reason || '-');
     tr.innerHTML = `
       <td>${fmtTime(t.ts)}</td>
       <td>${t.symbol}</td>
@@ -175,7 +202,7 @@ function renderTrades(items) {
       <td>${fmt(t.exit, 6)}</td>
       <td class="${pnlCls}">${fmt(t.pnl, 4)}</td>
       <td class="${pnlCls}">${fmt(t.pnl_pct, 2)}%</td>
-      <td class="muted">${t.reason || '-'}</td>
+      <td class="muted">${reasonText}</td>
       <td>${fmt(t.duration, 1)}</td>
     `;
     tbody.appendChild(tr);
@@ -198,9 +225,17 @@ function renderLogs(items) {
 function applySnapshot(s) {
   if (!s) return;
   if (s.engine) renderEngine(s.engine);
-  $('balanceVal').textContent = fmt(s.balance, 4) + ' USDT';
-  $('sessStart').textContent = fmt(s.session_starting_balance, 4);
-  $('sessPeak').textContent = fmt(s.session_peak_balance, 4);
+  const strategy = s.strategy || null;
+  const account = s.account || null;
+  const displayEquity = strategy?.equity ?? s.balance;
+  const displayStart = strategy?.session_starting_balance ?? s.session_starting_balance;
+  const displayPeak = strategy?.session_peak_balance ?? s.session_peak_balance;
+  $('balanceVal').textContent = fmt(displayEquity, 4) + ' USDT';
+  $('sessStart').textContent = fmt(displayStart, 4);
+  $('sessPeak').textContent = fmt(displayPeak, 4);
+  $('equityHint').textContent = strategy
+    ? `Line realized ${fmt(strategy.realized_pnl, 4)} | open ${fmt(strategy.open_pnl, 4)} | account ${fmt(account?.equity, 4)}`
+    : '-';
   $('univSize').textContent = s.universe_size ?? '-';
 
   renderCandidates(s.candidates || []);
@@ -208,7 +243,7 @@ function applySnapshot(s) {
   renderTrades(s.recent_trades || []);
   renderLogs(s.logs || []);
 
-  drawEquity($('equityCanvas'), s.equity || []);
+  drawEquity($('equityCanvas'), s.strategy_equity || s.equity || []);
 }
 
 // ============== controls ==============
@@ -229,6 +264,15 @@ async function loadConfig() {
   $('cfgRefreshSec').value = cfg.universe?.refresh_sec || 300;
   $('cfgPaperBal').value = cfg.paper_starting_balance || 1000;
   $('modeSelect').value = cfg.mode || 'paper';
+}
+
+async function loadInitialTrades() {
+  try {
+    const data = await api('/api/trades?limit=50');
+    renderTrades(data.items || []);
+  } catch (e) {
+    console.warn('loadInitialTrades error', e);
+  }
 }
 
 async function saveConfig() {
@@ -301,12 +345,20 @@ function readCheckedSymbols() {
 
 async function saveSymbols() {
   // If everything is checked → empty list (= trade all). Otherwise persist explicit set.
-  const sels = readCheckedSymbols();
-  // include hidden-by-filter selections too
-  for (const s of symSelected) sels.add(s);
-  // trick: if all visible are checked AND user hasn't filtered, treat as "all"
+  const filter = ($('symbolFilter').value || '').trim();
+  let sels;
+  if (!filter) {
+    sels = readCheckedSymbols();
+  } else {
+    sels = new Set(symSelected);
+    const visible = Array.from($('symbolList').querySelectorAll('input[type="checkbox"]')).map(cb => cb.dataset.sym);
+    for (const s of visible) sels.delete(s);
+    for (const cb of $('symbolList').querySelectorAll('input[type="checkbox"]')) {
+      if (cb.checked) sels.add(cb.dataset.sym);
+    }
+  }
   const allChecked = sels.size >= symAvailable.length;
-  const out = allChecked ? [] : Array.from(sels);
+  const out = allChecked ? [] : Array.from(sels).sort();
   await api('/api/universe/selection', 'POST', { symbols: out });
   symSelected = new Set(out);
   renderSymbolList();
@@ -314,14 +366,23 @@ async function saveSymbols() {
 
 // ============== ws ==============
 function connectWS() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${scheme}://${location.host}/ws`);
+  ws.onopen = () => { wsConnected = true; };
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'snapshot') applySnapshot(msg.data);
     } catch {}
   };
-  ws.onclose = () => setTimeout(connectWS, 1500);
+  ws.onerror = () => {
+    wsConnected = false;
+    try { ws.close(); } catch {}
+  };
+  ws.onclose = () => {
+    wsConnected = false;
+    setTimeout(connectWS, 1500);
+  };
 }
 
 // ============== boot ==============
@@ -350,15 +411,17 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   await loadConfig();
   await loadSymbols();
+  await loadInitialTrades();
   connectWS();
 
-  // Fallback poll if WS dies
+  // Fallback poll if WS is down
   setInterval(async () => {
+    if (wsConnected) return;
     try {
       const s = await api('/api/state');
       applySnapshot(s);
     } catch {}
-  }, 3000);
+  }, 10000);
 });
 
 // ---- Symbols Tab ----
@@ -382,7 +445,7 @@ function renderSymbolsTab() {
   if (!container) return;
   if (!symbolOverrides.length) { container.innerHTML = '<div style="color:#888;padding:16px">No overrides loaded.</div>'; return; }
 
-  const isStock = sym => ["NVDA_USDT","MSTR_USDT","TSLA_USDT","INTC_USDT"].includes(sym);
+  const isStock = sym => STOCK_SYMBOLS.has(sym);
 
   container.innerHTML = symbolOverrides.map((ov, idx) => {
     const typeClass = isStock(ov.symbol) ? 'type-s' : 'type-c';

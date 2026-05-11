@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FluFlip Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">FF</div>
+        <div class="titles">
+          <div class="name">FluFlip</div>
+          <div class="sub" id="sub">multi-symbol 100x scalping bot</div>
+        </div>
+      </div>
+
+      <div class="status-row">
+        <div class="pill" id="binPill">Binance: ?</div>
+        <div class="pill" id="mexcPill">MEXC: ?</div>
+        <div class="pill" id="authPill">Auth: ?</div>
+        <div class="pill" id="modePill">Mode: ?</div>
+        <div class="pill kill" id="killPill" style="display:none">KILL</div>
+      </div>
+
+      <div class="topbar-right">
+        <select id="modeSelect">
+          <option value="logger">Logger</option>
+          <option value="paper" selected>Paper</option>
+          <option value="real">Real</option>
+        </select>
+        <button class="btn btn-primary" id="btnStart">Start</button>
+        <button class="btn" id="btnStop">Stop</button>
+        <button class="btn btn-red" id="btnKill">KILL ALL</button>
+      </div>
+    </header>
+
+    <nav class="main-tabs">
+      <button class="main-tab-btn active" onclick="showTab('dashboard')">Dashboard</button>
+      <button class="main-tab-btn" onclick="showTab('symbols')">Symbols</button>
+      <button class="main-tab-btn" onclick="showTab('analytics')">Analytics</button>
+    </nav>
+
+    <!-- DASHBOARD TAB -->
+    <div id="panel-dashboard" class="panel-wrap">
+    <main class="grid-new">
+      <!-- Left Column: Equity + Session Stats -->
+      <section class="card stats-compact">
+        <div class="card-h"><div class="h">Equity</div><div class="hint" id="equityHint">-</div></div>
+        <div class="big" id="balanceVal">-</div>
+        <canvas id="equityCanvas" height="80"></canvas>
+        <div class="kv">
+          <span>Session start</span><span id="sessStart">-</span>
+          <span>Peak</span><span id="sessPeak">-</span>
+          <span>Open positions</span><span id="openCount">-</span>
+          <span>Universe</span><span id="univSize">-</span>
+        </div>
+      </section>
+
+      <!-- Center Column: Positions + Recent Trades -->
+      <section class="card positions-new">
+        <div class="card-h"><div class="h">Open Positions</div><div class="hint" id="posHint">-</div></div>
+        <div class="table-scroll">
+          <table id="posTable">
+            <thead><tr>
+              <th>Symbol</th><th>Side</th><th>Entry</th><th>SL</th>
+              <th>Algo</th><th>Score</th><th>Age</th><th>Latency</th>
+              <th>PnL $</th><th>PnL %</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card trades-new">
+        <div class="card-h">
+          <div class="h">Recent Trades</div>
+          <div class="hint">last 20</div>
+          <div class="trade-filters">
+            <select id="tradeSymbolFilter" class="mini-select">
+              <option value="">All Symbols</option>
+            </select>
+            <select id="tradeResultFilter" class="mini-select">
+              <option value="">All Results</option>
+              <option value="profit">Profit Only</option>
+              <option value="loss">Loss Only</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-scroll" id="tradesScroll">
+          <table id="tradesTable">
+            <thead><tr>
+              <th>Time</th><th>Symbol</th><th>Side</th><th>Algo</th><th>Score</th>
+              <th>Entry→Fill</th><th>Exit→Close</th>
+              <th>PnL $</th><th>PnL %</th><th>Reason</th><th>Dur</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Right Column: Candidates -->
+      <section class="card candidates-new">
+        <div class="card-h">
+          <div class="h">Top Candidates</div>
+          <input type="text" id="candSearchInput" class="search-input" placeholder="Search symbol..." />
+        </div>
+        <div class="filter-tabs" id="candidateFilterTabs">
+          <button class="tab-btn active" data-filter="all" onclick="setCandidateFilter('all')">All</button>
+          <button class="tab-btn" data-filter="crypto" onclick="setCandidateFilter('crypto')">Crypto</button>
+          <button class="tab-btn" data-filter="stocks" onclick="setCandidateFilter('stocks')">Stocks</button>
+        </div>
+        <div class="table-scroll">
+          <table id="candTable">
+            <thead><tr>
+              <th class="sortable" onclick="sortCandidates('symbol')">Symbol</th>
+              <th>Side</th>
+              <th class="sortable" onclick="sortCandidates('score')">Score ▼</th>
+              <th class="sortable" onclick="sortCandidates('z')">z</th>
+              <th>Spread</th><th>Depth</th><th>Blocked</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Bottom: Logs -->
+      <section class="card logs-bottom">
+        <div class="card-h"><div class="h">Logs</div><div class="hint">tail</div></div>
+        <div class="logbox" id="logs"></div>
+      </section>
+
+      <!-- Config Panel (collapsed by default) -->
+      <section class="card config-pane">
+        <div class="card-h"><div class="h">Config</div><div class="hint">edit + save</div></div>
+        <div class="cfg-row"><label>MEXC Web UID</label><input id="cfgWebUid" /></div>
+        <div class="section-title">Risk</div>
+        <div class="cfg-row"><label>K (max positions)</label><input id="cfgK" type="number" /></div>
+        <div class="cfg-row"><label>Margin per slot %</label><input id="cfgMarginPct" type="number" step="0.01" /></div>
+        <div class="cfg-row"><label>Leverage mode</label>
+          <select id="cfgLevMode"><option value="max">max</option><option value="fixed">fixed</option></select>
+        </div>
+        <div class="cfg-row"><label>Fixed leverage</label><input id="cfgFixedLev" type="number" /></div>
+        <div class="cfg-row"><label>Daily loss kill %</label><input id="cfgDailyKill" type="number" step="0.01" /></div>
+        <div class="cfg-row">
+          <button class="btn btn-primary" id="btnSaveCfg">Save</button>
+          <button class="btn" id="btnRefreshUniverse">Refresh universe</button>
+        </div>
+      </section>
+    </main>
+    </div><!-- end panel-dashboard -->
+
+    <!-- SYMBOLS TAB -->
+    <div id="panel-symbols" class="panel-wrap" style="display:none">
+      <div class="card" style="margin:12px">
+        <div class="card-h">
+          <div class="h">Symbol Configuration</div>
+          <button class="btn btn-primary" onclick="saveSymbolOverrides()">Save</button>
+        </div>
+        <div id="symbols-table-container">Loading...</div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS TAB (NEW) -->
+    <div id="panel-analytics" class="panel-wrap" style="display:none">
+      <div class="analytics-grid">
+        <!-- Session Statistics -->
+        <section class="card">
+          <div class="card-h"><div class="h">Session Statistics</div></div>
+          <div class="stats-grid">
+            <div class="stat-box">
+              <div class="stat-label">Best Trade</div>
+              <div class="stat-value green" id="statBestTrade">-</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Worst Trade</div>
+              <div class="stat-value red" id="statWorstTrade">-</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Avg Duration</div>
+              <div class="stat-value" id="statAvgDuration">-</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Win Rate</div>
+              <div class="stat-value" id="statWinRate">-</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Avg Entry Latency</div>
+              <div class="stat-value" id="statAvgEntryLatency">-</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">Avg Exit Latency</div>
+              <div class="stat-value" id="statAvgExitLatency">-</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- PnL Distribution -->
+        <section class="card">
+          <div class="card-h"><div class="h">PnL Distribution</div></div>
+          <canvas id="pnlDistChart" height="200"></canvas>
+        </section>
+
+        <!-- Activity Heatmap -->
+        <section class="card">
+          <div class="card-h"><div class="h">Symbol Activity Heatmap</div></div>
+          <div id="heatmapContainer"></div>
+        </section>
+
+        <!-- Win Rate by Hour -->
+        <section class="card">
+          <div class="card-h"><div class="h">Win Rate by Hour</div></div>
+          <canvas id="winRateByHourChart" height="200"></canvas>
+        </section>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

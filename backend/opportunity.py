@@ -21,11 +21,136 @@ class Opportunity:
     fair: float
     sigma: float
     z: float
+    algorithm: str = ""  # which algorithm generated this signal
+    signal_ts: float = 0.0  # when signal was detected
 
 
 class OpportunityEngine:
     def __init__(self, cfg) -> None:
         self.cfg = cfg
+
+    def _metric_for_side(self, st: SymbolStats, side: str, suffix: str):
+        prefix = "long" if str(side).upper() == "LONG" else "short"
+        return getattr(st, f"{prefix}_{suffix}", None)
+
+    def _micro_setting(self, override, name: str, default):
+        if override is not None:
+            value = getattr(override, name, None)
+            if value is not None:
+                return value
+        return getattr(self.cfg.strategy, name, default)
+
+    def _apply_symbol_override_filters(self, st: SymbolStats, override) -> SymbolStats:
+        if not st.side_hint or st.blocked_reason:
+            return st
+
+        side = st.side_hint
+        spread_bps = st.spread_bps
+
+        if override is not None:
+            if side == "LONG" and override.allow_long is False:
+                st.score = 0.0
+                st.side_hint = None
+                st.blocked_reason = "long_disabled"
+                return st
+            if side == "SHORT" and override.allow_short is False:
+                st.score = 0.0
+                st.side_hint = None
+                st.blocked_reason = "short_disabled"
+                return st
+
+            min_abs_spread_bps = float(override.min_abs_spread_bps or 0.0)
+            if spread_bps is not None and min_abs_spread_bps > 0 and abs(spread_bps) < min_abs_spread_bps:
+                st.score = 0.0
+                st.side_hint = None
+                st.blocked_reason = f"tiny_spread={spread_bps:.2f}bps"
+                return st
+
+            min_lag_bps = float(override.min_lag_bps or 0.0)
+            max_chase_bps = float(override.max_chase_bps or 0.0)
+            if spread_bps is not None:
+                if side == "LONG":
+                    if spread_bps > max_chase_bps:
+                        st.score = 0.0
+                        st.side_hint = None
+                        st.blocked_reason = f"chasing_long={spread_bps:.2f}bps"
+                        return st
+                    if min_lag_bps > 0 and spread_bps > -min_lag_bps:
+                        st.score = 0.0
+                        st.side_hint = None
+                        st.blocked_reason = f"tiny_lag_long={spread_bps:.2f}bps"
+                        return st
+                else:
+                    if spread_bps < -max_chase_bps:
+                        st.score = 0.0
+                        st.side_hint = None
+                        st.blocked_reason = f"chasing_short={spread_bps:.2f}bps"
+                        return st
+                    if min_lag_bps > 0 and spread_bps < min_lag_bps:
+                        st.score = 0.0
+                        st.side_hint = None
+                        st.blocked_reason = f"tiny_lag_short={spread_bps:.2f}bps"
+                        return st
+
+            anti_fade_30s_bps = float(override.anti_fade_30s_bps or 0.0)
+            fv30 = st.fair_velocity_30s_bps
+            if fv30 is not None and anti_fade_30s_bps > 0:
+                if side == "LONG" and fv30 < -anti_fade_30s_bps:
+                    st.score = 0.0
+                    st.side_hint = None
+                    st.blocked_reason = f"anti_fade_30s={fv30:.2f}"
+                    return st
+                if side == "SHORT" and fv30 > anti_fade_30s_bps:
+                    st.score = 0.0
+                    st.side_hint = None
+                    st.blocked_reason = f"anti_fade_30s={fv30:.2f}"
+                    return st
+
+        micro_levels = int(self._micro_setting(override, "micro_levels", 0) or 0)
+        if micro_levels <= 0:
+            return st
+
+        path_hole_max = float(self._micro_setting(override, "micro_path_hole_max_points", 0.0) or 0.0)
+        support_ratio_min = float(self._micro_setting(override, "micro_support_ratio_min", 0.0) or 0.0)
+        support_shape_min = float(self._micro_setting(override, "micro_support_shape_min", 0.0) or 0.0)
+        path_shape_min = float(self._micro_setting(override, "micro_path_shape_min", 0.0) or 0.0)
+        back_hole_max = float(self._micro_setting(override, "micro_back_hole_max_points", 0.0) or 0.0)
+        if not any(v > 0 for v in (path_hole_max, support_ratio_min, support_shape_min, path_shape_min, back_hole_max)):
+            return st
+
+        path_hole = self._metric_for_side(st, side, "path_hole_points")
+        support_ratio = self._metric_for_side(st, side, "support_ratio")
+        support_shape = self._metric_for_side(st, side, "support_shape")
+        path_shape = self._metric_for_side(st, side, "path_shape")
+        back_hole = self._metric_for_side(st, side, "back_hole_points")
+
+        if path_hole_max > 0 and path_hole is not None and path_hole > path_hole_max:
+            st.score = 0.0
+            st.side_hint = None
+            st.blocked_reason = f"micro_path_hole={path_hole:.2f}"
+            return st
+        if support_ratio_min > 0 and support_ratio is not None and support_ratio < support_ratio_min:
+            st.score = 0.0
+            st.side_hint = None
+            st.blocked_reason = f"micro_support_ratio={support_ratio:.2f}"
+            return st
+        if support_shape_min > 0 and support_shape is not None and support_shape < support_shape_min:
+            st.score = 0.0
+            st.side_hint = None
+            st.blocked_reason = f"micro_support_shape={support_shape:.2f}"
+            return st
+        if path_shape_min > 0 and path_shape is not None and path_shape < path_shape_min:
+            st.score = 0.0
+            st.side_hint = None
+            st.blocked_reason = f"micro_path_shape={path_shape:.2f}"
+            return st
+        if back_hole_max > 0 and back_hole is not None and back_hole > back_hole_max:
+            st.score = 0.0
+            st.side_hint = None
+            st.blocked_reason = f"micro_back_hole={back_hole:.2f}"
+            return st
+
+        return st
 
     def evaluate(self, symbol: str, st: SymbolStats) -> SymbolStats:
         """Mutates st with score / side_hint / blocked_reason based on the
@@ -33,12 +158,14 @@ class OpportunityEngine:
         st.score = 0.0
         st.side_hint = None
         st.blocked_reason = None
+        st.selected_algorithm = None
 
         if st.fair is None or st.mexc_mid is None:
             st.blocked_reason = "no_books"
             return st
 
         algo = str(getattr(self.cfg.strategy, "algorithm", "meanrev")).lower()
+        st.selected_algorithm = algo
 
         if algo == "momentum":
             self._eval_momentum(symbol, st)
@@ -66,7 +193,7 @@ class OpportunityEngine:
         # systematically anti-correlated with actual short-term price.
         if bool(getattr(self.cfg.strategy, "invert", False)) and st.side_hint:
             st.side_hint = "SHORT" if st.side_hint == "LONG" else "LONG"
-        return st
+        return self._apply_symbol_override_filters(st, None)
 
     def _evaluate_single(self, symbol: str, st: SymbolStats, algo: str) -> SymbolStats:
         """Run a single named algorithm on a shallow copy of st."""
@@ -75,12 +202,13 @@ class OpportunityEngine:
         s.score = 0.0
         s.side_hint = None
         s.blocked_reason = None
+        a = algo.lower()
+        s.selected_algorithm = a
 
         if s.fair is None or s.mexc_mid is None:
             s.blocked_reason = "no_books"
             return s
 
-        a = algo.lower()
         if a == "momentum":
             self._eval_momentum(symbol, s)
         elif a == "ofi":
@@ -123,15 +251,26 @@ class OpportunityEngine:
         min_score_threshold = 1.2
 
         signals = []
+        results = []
         for algo in algos:
             result = self._evaluate_single(symbol, st, algo)
+            results.append(result)
             if result.score > 0 and result.side_hint and not result.blocked_reason:
                 signals.append((result.score, result.side_hint, result))
 
         if not signals:
+            best_blocked = None
+            if results:
+                ranked = sorted(
+                    results,
+                    key=lambda r: (float(r.score or 0.0), 0 if r.blocked_reason else 1),
+                    reverse=True,
+                )
+                best_blocked = ranked[0]
             st.score = 0.0
             st.side_hint = None
-            st.blocked_reason = "no_algo_fired"
+            st.blocked_reason = getattr(best_blocked, "blocked_reason", None) or "no_algo_fired"
+            st.selected_algorithm = getattr(best_blocked, "selected_algorithm", None)
             return st
 
         if mode == "CONSENSUS":
@@ -140,6 +279,7 @@ class OpportunityEngine:
                 st.score = 0.0
                 st.side_hint = None
                 st.blocked_reason = "consensus_conflict"
+                st.selected_algorithm = None
                 return st
             product = 1.0
             for sc, _, _ in signals:
@@ -149,7 +289,8 @@ class OpportunityEngine:
             st.score = geo_mean
             st.side_hint = best_st.side_hint
             st.blocked_reason = None
-            return st
+            st.selected_algorithm = getattr(best_st, "selected_algorithm", None)
+            return self._apply_symbol_override_filters(st, override)
 
         # ANY or BEST: pick highest score
         best_score, best_side, best_st = max(signals, key=lambda x: x[0])
@@ -158,6 +299,7 @@ class OpportunityEngine:
             st.score = 0.0
             st.side_hint = None
             st.blocked_reason = "best_below_threshold"
+            st.selected_algorithm = None
             return st
 
         st.score = best_score
@@ -165,7 +307,8 @@ class OpportunityEngine:
         st.blocked_reason = None
         st.z_score = getattr(best_st, "z_score", st.z_score)
         st.sigma_spread = getattr(best_st, "sigma_spread", st.sigma_spread)
-        return st
+        st.selected_algorithm = getattr(best_st, "selected_algorithm", None)
+        return self._apply_symbol_override_filters(st, override)
 
     # ------------------------ meanrev (fade MEXC vs F) ------------------------
     def _eval_meanrev(self, symbol: str, st: SymbolStats) -> SymbolStats:
@@ -180,6 +323,12 @@ class OpportunityEngine:
 
         z = st.z_score
         side = "SHORT" if z > 0 else "LONG"
+
+        min_spread_bps = float(getattr(s, "meanrev_min_spread_bps", 0.0) or 0.0)
+        spread_bps = st.spread_bps
+        if min_spread_bps > 0 and spread_bps is not None and abs(spread_bps) < min_spread_bps:
+            st.blocked_reason = f"tiny_spread={spread_bps:.2f}bps"
+            return st
 
         if abs(z) < float(s.entry_z):
             st.blocked_reason = "low_z"
@@ -198,12 +347,24 @@ class OpportunityEngine:
 
         if s.require_ofi_alignment:
             ofi = st.ofi or 0.0
-            if z > 0 and ofi > 0 and abs(ofi) > 5_000:
+            min_ofi = float(getattr(s, "ofi_min_usdt", 5_000) or 5_000)
+            if z > 0 and ofi > 0 and abs(ofi) > min_ofi:
                 st.blocked_reason = f"ofi_with_dev={ofi:+.0f}"
                 return st
-            if z < 0 and ofi < 0 and abs(ofi) > 5_000:
+            if z < 0 and ofi < 0 and abs(ofi) > min_ofi:
                 st.blocked_reason = f"ofi_with_dev={ofi:+.0f}"
                 return st
+
+        if bool(getattr(s, "meanrev_require_book_alignment", False)):
+            imb = st.mexc_book_imbalance
+            min_imb = float(getattr(s, "meanrev_min_imbalance_log", 0.0) or 0.0)
+            if imb is not None and min_imb > 0:
+                if side == "LONG" and imb < -min_imb:
+                    st.blocked_reason = f"book_against={imb:+.2f}"
+                    return st
+                if side == "SHORT" and imb > min_imb:
+                    st.blocked_reason = f"book_against={imb:+.2f}"
+                    return st
 
         depth = st.mexc_book_top10_notional or 0.0
         if depth < float(s.min_book_depth_usdt):
@@ -294,6 +455,25 @@ class OpportunityEngine:
             st.blocked_reason = f"low_ofi={ofi:+.0f}"
             return st
 
+        side = "LONG" if ofi > 0 else "SHORT"
+
+        spread_bps = st.spread_bps
+        if bool(getattr(s, "ofi_require_lag", False)) and spread_bps is not None:
+            max_chase_bps = float(getattr(s, "ofi_max_chase_bps", 0.0) or 0.0)
+            min_lag_bps = float(getattr(s, "ofi_min_lag_bps", 0.0) or 0.0)
+            if side == "LONG" and spread_bps > max_chase_bps:
+                st.blocked_reason = f"chasing_long={spread_bps:.2f}bps"
+                return st
+            if side == "SHORT" and spread_bps < -max_chase_bps:
+                st.blocked_reason = f"chasing_short={spread_bps:.2f}bps"
+                return st
+            if side == "LONG" and spread_bps > -min_lag_bps:
+                st.blocked_reason = f"tiny_lag_long={spread_bps:.2f}bps"
+                return st
+            if side == "SHORT" and spread_bps < min_lag_bps:
+                st.blocked_reason = f"tiny_lag_short={spread_bps:.2f}bps"
+                return st
+
         # Avoid trading into news / extreme moves
         fv = st.fair_velocity_bps_per_sec or 0.0
         max_v = float(getattr(s, "momentum_max_velocity_bps_per_sec", 8.0))
@@ -301,7 +481,18 @@ class OpportunityEngine:
             st.blocked_reason = f"crash_fair={fv:.2f}bps/s"
             return st
 
-        side = "LONG" if ofi > 0 else "SHORT"
+        imb = st.mexc_book_imbalance
+        if bool(getattr(s, "ofi_require_book_alignment", False)):
+            min_imb = float(getattr(s, "ofi_min_imbalance_log", 0.0) or 0.0)
+            if imb is None:
+                st.blocked_reason = "no_imbalance"
+                return st
+            if abs(imb) < min_imb:
+                st.blocked_reason = f"flat_book={imb:+.2f}"
+                return st
+            if (side == "LONG" and imb <= 0) or (side == "SHORT" and imb >= 0):
+                st.blocked_reason = f"book_against={imb:+.2f}"
+                return st
 
         depth = st.mexc_book_top10_notional or 0.0
         if depth < float(s.min_book_depth_usdt):
@@ -309,7 +500,10 @@ class OpportunityEngine:
             return st
 
         liq_factor = min(1.0, depth / max(1.0, float(s.min_book_depth_usdt) * 5.0))
-        st.score = abs(ofi) / max(1.0, min_ofi) * liq_factor
+        flow_bonus = 1.0
+        if imb is not None and ((side == "LONG" and imb > 0) or (side == "SHORT" and imb < 0)):
+            flow_bonus += 0.10
+        st.score = abs(ofi) / max(1.0, min_ofi) * liq_factor * flow_bonus
         st.side_hint = side
         return st
 
@@ -337,6 +531,23 @@ class OpportunityEngine:
 
         # Bid-heavy → price will lift → LONG. Ask-heavy → SHORT.
         side = "LONG" if imb > 0 else "SHORT"
+
+        spread_bps = st.spread_bps
+        if bool(getattr(s, "imbalance_require_lag", False)) and spread_bps is not None:
+            max_chase_bps = float(getattr(s, "imbalance_max_chase_bps", 0.0) or 0.0)
+            min_lag_bps = float(getattr(s, "imbalance_min_lag_bps", 0.0) or 0.0)
+            if side == "LONG" and spread_bps > max_chase_bps:
+                st.blocked_reason = f"chasing_long={spread_bps:.2f}bps"
+                return st
+            if side == "SHORT" and spread_bps < -max_chase_bps:
+                st.blocked_reason = f"chasing_short={spread_bps:.2f}bps"
+                return st
+            if side == "LONG" and spread_bps > -min_lag_bps:
+                st.blocked_reason = f"tiny_lag_long={spread_bps:.2f}bps"
+                return st
+            if side == "SHORT" and spread_bps < min_lag_bps:
+                st.blocked_reason = f"tiny_lag_short={spread_bps:.2f}bps"
+                return st
 
         # Don't fight a fast move on Binance
         fv = st.fair_velocity_bps_per_sec or 0.0
@@ -474,6 +685,26 @@ class OpportunityEngine:
         side = "LONG" if fv > 0 else "SHORT"
         sig_v = 1 if fv > 0 else -1
 
+        # Lag/chase filter: for a follow-through scalp we want MEXC to still
+        # be at or behind fair in the trade direction, not already through it.
+        require_lag = bool(getattr(s, "raw_momentum_require_lag", False))
+        max_chase_bps = float(getattr(s, "raw_momentum_max_chase_bps", 0.0) or 0.0)
+        min_lag_bps = float(getattr(s, "raw_momentum_min_lag_bps", 0.0) or 0.0)
+        spread_bps = st.spread_bps
+        if require_lag and spread_bps is not None:
+            if side == "LONG" and spread_bps > max_chase_bps:
+                st.blocked_reason = f"chasing_long={spread_bps:.2f}bps"
+                return st
+            if side == "SHORT" and spread_bps < -max_chase_bps:
+                st.blocked_reason = f"chasing_short={spread_bps:.2f}bps"
+                return st
+            if side == "LONG" and spread_bps > -min_lag_bps:
+                st.blocked_reason = f"tiny_lag_long={spread_bps:.2f}bps"
+                return st
+            if side == "SHORT" and spread_bps < min_lag_bps:
+                st.blocked_reason = f"tiny_lag_short={spread_bps:.2f}bps"
+                return st
+
         # 5-second confirmation: 5s velocity must agree on direction.
         # Skips counter-trend 1-sec blips during sustained moves.
         require_5s = bool(getattr(s, "raw_momentum_require_5s_agree", True))
@@ -492,12 +723,41 @@ class OpportunityEngine:
                     st.blocked_reason = f"against_30s_trend fv1={fv:.2f} fv30={fv30:.2f}"
                     return st
 
+        ofi = st.ofi or 0.0
+        if bool(getattr(s, "raw_momentum_require_ofi_alignment", False)):
+            min_ofi = float(getattr(s, "raw_momentum_min_ofi_usdt", 0.0) or 0.0)
+            if abs(ofi) < min_ofi:
+                st.blocked_reason = f"low_ofi={ofi:+.0f}"
+                return st
+            if (side == "LONG" and ofi <= 0) or (side == "SHORT" and ofi >= 0):
+                st.blocked_reason = f"ofi_against={ofi:+.0f}"
+                return st
+
+        imb = st.mexc_book_imbalance
+        if bool(getattr(s, "raw_momentum_require_book_alignment", False)):
+            min_imb = float(getattr(s, "raw_momentum_min_imbalance_log", 0.0) or 0.0)
+            if imb is None:
+                st.blocked_reason = "no_imbalance"
+                return st
+            if abs(imb) < min_imb:
+                st.blocked_reason = f"flat_book={imb:+.2f}"
+                return st
+            if (side == "LONG" and imb <= 0) or (side == "SHORT" and imb >= 0):
+                st.blocked_reason = f"book_against={imb:+.2f}"
+                return st
+
         depth = st.mexc_book_top10_notional or 0.0
         if depth < float(s.min_book_depth_usdt):
             st.blocked_reason = f"thin_book={depth:.0f}"
             return st
 
-        st.score = abs(fv) / max(1.0, min_v)
+        liq_factor = min(1.0, depth / max(1.0, float(s.min_book_depth_usdt) * 5.0))
+        flow_bonus = 1.0
+        if (side == "LONG" and ofi > 0) or (side == "SHORT" and ofi < 0):
+            flow_bonus += 0.10
+        if imb is not None and ((side == "LONG" and imb > 0) or (side == "SHORT" and imb < 0)):
+            flow_bonus += 0.10
+        st.score = abs(fv) / max(1.0, min_v) * liq_factor * flow_bonus
         st.side_hint = side
         return st
 
@@ -560,6 +820,23 @@ class OpportunityEngine:
         max_v = float(getattr(s, "confluence_max_velocity_bps", 20.0))
         min_ofi = float(getattr(s, "confluence_min_ofi_usdt", 3000))
         min_imb = float(getattr(s, "confluence_min_imbalance_log", 0.5))
+
+        spread_bps = st.spread_bps
+        if bool(getattr(s, "confluence_require_lag", False)) and spread_bps is not None:
+            max_chase_bps = float(getattr(s, "confluence_max_chase_bps", 0.0) or 0.0)
+            min_lag_bps = float(getattr(s, "confluence_min_lag_bps", 0.0) or 0.0)
+            if fv > 0 and spread_bps > max_chase_bps:
+                st.blocked_reason = f"chasing_long={spread_bps:.2f}bps"
+                return st
+            if fv < 0 and spread_bps < -max_chase_bps:
+                st.blocked_reason = f"chasing_short={spread_bps:.2f}bps"
+                return st
+            if fv > 0 and spread_bps > -min_lag_bps:
+                st.blocked_reason = f"tiny_lag_long={spread_bps:.2f}bps"
+                return st
+            if fv < 0 and spread_bps < min_lag_bps:
+                st.blocked_reason = f"tiny_lag_short={spread_bps:.2f}bps"
+                return st
 
         # Strength
         if abs(fv) < min_v:
@@ -629,10 +906,12 @@ class OpportunityEngine:
 
         # Don't fight a strong Binance trend in the SAME direction as our deviation
         # (e.g., MEXC is high AND Binance is racing higher → fade is suicide).
-        fv30 = st.fair_velocity_30s_bps or 0.0
-        if (z > 0 and fv30 > 5.0) or (z < 0 and fv30 < -5.0):
-            st.blocked_reason = f"trend_against fv30={fv30:.2f}"
-            return st
+        # ONLY check this if we have Binance data (for crypto symbols).
+        fv30 = st.fair_velocity_30s_bps
+        if fv30 is not None:
+            if (z > 0 and fv30 > 5.0) or (z < 0 and fv30 < -5.0):
+                st.blocked_reason = f"trend_against fv30={fv30:.2f}"
+                return st
 
         depth = st.mexc_book_top10_notional or 0.0
         if depth < float(s.min_book_depth_usdt):
@@ -646,6 +925,8 @@ class OpportunityEngine:
     def make_opportunity(self, symbol: str, st: SymbolStats) -> Optional[Opportunity]:
         if not st.side_hint or st.score <= 0 or st.blocked_reason:
             return None
+        import time
+        algo = st.selected_algorithm or str(getattr(self.cfg.strategy, "algorithm", "meanrev")).lower()
         return Opportunity(
             symbol=symbol,
             side=st.side_hint,
@@ -654,6 +935,8 @@ class OpportunityEngine:
             fair=st.fair or 0.0,
             sigma=st.sigma_spread or 0.0,
             z=st.z_score or 0.0,
+            algorithm=algo,
+            signal_ts=time.time(),
         )
 
     def rank(self, stats: Dict[str, SymbolStats]) -> List[Dict[str, object]]:
