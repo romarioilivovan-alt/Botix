@@ -1521,6 +1521,25 @@ class RealExecutor:
             residual_edge_bps = _residual_edge_bps(pos, current_fair, exit_price_now)
             age_sec = now - pos.open_ts
 
+            # Fair-cross exit with hysteresis: close when price returns to fair
+            # with a small neutral band to avoid noise.
+            exit_neutral_band_bps = float(getattr(self.cfg.strategy, "exit_neutral_band_bps", 0.5))
+            min_hold_sec = float(getattr(self.cfg.strategy, "min_hold_sec", 3.0))
+            if current_fair is not None and current_fair > 0 and pos.entry_price > 0:
+                cur_dev_bps = (mid - current_fair) / current_fair * 1e4
+                # LONG was opened when MEXC < fair (negative dev), wait for return to ~0
+                if pos.side == "LONG" and cur_dev_bps >= -exit_neutral_band_bps:
+                    if age_sec >= min_hold_sec:
+                        pos.exit_signal_ts = now
+                        await self._close_market(pos, raw, reason="fair_cross")
+                        continue
+                # SHORT was opened when MEXC > fair (positive dev), wait for return to ~0
+                if pos.side == "SHORT" and cur_dev_bps <= exit_neutral_band_bps:
+                    if age_sec >= min_hold_sec:
+                        pos.exit_signal_ts = now
+                        await self._close_market(pos, raw, reason="fair_cross")
+                        continue
+
             # Fair-value TP: mean-reversion trades should realize the reversion
             # instead of waiting for the time backstop.
             if pos.tp_price is not None:

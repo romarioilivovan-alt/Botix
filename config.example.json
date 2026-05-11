@@ -50,6 +50,9 @@
     "sl_trail_after": 2.0,
     "sl_update_throttle_sec": 0.2,
 
+    "exit_neutral_band_bps": 0.5,
+    "min_hold_sec": 3.0,
+
     "max_hold_sec": 30.0,
     "cooldown_min_sec": 3.0,
     "cooldown_max_sec": 8.0
