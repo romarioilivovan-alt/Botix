@@ -120,6 +120,16 @@ class RealExecutor:
             self.state.day_start_ts = time.time()
             self.state.day_start_balance = equity
 
+        # Warn if taker_entry=True and entry_latency_ms>0
+        taker_entry = bool(getattr(self.cfg.strategy, "taker_entry", False))
+        entry_latency_ms = int(getattr(self.cfg.strategy, "entry_latency_ms", 200) or 200)
+        if taker_entry and entry_latency_ms > 0:
+            logger.warning(
+                "taker_entry=True with entry_latency_ms=%d; forcing entry_latency_ms=0 for immediate execution",
+                entry_latency_ms
+            )
+            self.cfg.strategy.entry_latency_ms = 0
+
     async def _fetch_account_balances(self) -> tuple[float, float]:
         try:
             snap = await self.trader.get_usdt_balance_snapshot()
@@ -480,13 +490,41 @@ class RealExecutor:
 
     async def loop(self) -> None:
         await self.init_balance()
-        tick_sec = self._loop_tick_sec()
+        self._stop = asyncio.Event()
+        fast = asyncio.create_task(self._fast_loop(), name="real_fast_loop")
+        slow = asyncio.create_task(self._slow_loop(), name="real_slow_loop")
+        try:
+            await self._stop.wait()
+        finally:
+            for t in (fast, slow):
+                t.cancel()
+            await asyncio.gather(fast, slow, return_exceptions=True)
+
+    async def _fast_loop(self) -> None:
+        """Hot path: SL/TP management, quote reconcile, kill switch. ~50ms."""
+        interval = float(self.cfg.strategy.fast_tick_sec if hasattr(self.cfg.strategy, 'fast_tick_sec') else 0.05)
+        while not self._stop.is_set():
+            t0 = time.perf_counter()
+            try:
+                await self._reconcile_quotes()
+                await self._reconcile_positions()
+                await self._check_kill_switch()
+            except Exception:
+                logger.exception("fast_loop tick error")
+            elapsed = time.perf_counter() - t0
+            sleep_for = max(0.0, interval - elapsed)
+            await asyncio.sleep(sleep_for)
+
+    async def _slow_loop(self) -> None:
+        """Cold path: balance refresh, equity logging, housekeeping. ~1s."""
+        interval = float(self.cfg.strategy.slow_tick_sec if hasattr(self.cfg.strategy, 'slow_tick_sec') else 1.0)
         while not self._stop.is_set():
             try:
-                await self._tick()
-            except Exception as e:
-                logger.exception("real tick error: %s", e)
-            await asyncio.sleep(tick_sec)
+                await self._refresh_balance_periodically()
+                await self._log_equity_periodically()
+            except Exception:
+                logger.exception("slow_loop tick error")
+            await asyncio.sleep(interval)
 
     async def on_signal(self, opp: Opportunity) -> None:
         async with self._lock:
@@ -495,6 +533,7 @@ class RealExecutor:
     # ----------------------------- internals -----------------------------
 
     async def _tick(self) -> None:
+        # Deprecated - now split into _fast_loop and _slow_loop
         await self._refresh_balance_periodically()
         await self._reconcile_quotes()
         await self._reconcile_positions()

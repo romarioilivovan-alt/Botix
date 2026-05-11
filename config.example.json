@@ -20,6 +20,9 @@
     "cancel_z": 0.5,
     "quote_timeout_sec": 5.0,
     "quote_offset_ticks": 0,
+    "entry_latency_ms": 0,
+    "fast_tick_sec": 0.05,
+    "slow_tick_sec": 1.0,
 
     "max_fair_velocity_bps_per_sec": 5.0,
     "min_book_depth_usdt": 2000,
