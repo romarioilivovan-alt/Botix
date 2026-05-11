@@ -844,20 +844,7 @@ class RealExecutor:
                 continue
 
     async def _is_quote_filled(self, q: _Quote) -> bool:
-        # 1) Check positions (cheap)
-        try:
-            raw = await self._get_positions_raw_cached()
-            for p in raw:
-                if str(p.get("symbol") or "").upper() != q.symbol:
-                    continue
-                pt = int(p.get("positionType") or 0)
-                want = 1 if q.side == "LONG" else 2
-                if pt == want and float(p.get("holdVol") or 0) > 0:
-                    return True
-        except Exception as e:
-            logger.warning("quote fill check by positions failed for %s: %s", q.symbol, e)
-
-        # 2) Query order state (if we have id)
+        # 1) Query order state first (if we have id) - more accurate than positions
         if q.order_id:
             try:
                 res = await self.trader.query_order(int(q.order_id))
@@ -875,6 +862,20 @@ class RealExecutor:
                         return False
             except Exception:
                 pass
+
+        # 2) Fallback: check positions (with TTL=0.5s cache)
+        try:
+            raw = await self._get_positions_raw_cached(max_age_sec=0.5)
+            for p in raw:
+                if str(p.get("symbol") or "").upper() != q.symbol:
+                    continue
+                pt = int(p.get("positionType") or 0)
+                want = 1 if q.side == "LONG" else 2
+                if pt == want and float(p.get("holdVol") or 0) > 0:
+                    return True
+        except Exception as e:
+            logger.warning("quote fill check by positions failed for %s: %s", q.symbol, e)
+
         return False
 
     async def _find_position(self, symbol: str, side: str) -> Optional[Dict[str, Any]]:
