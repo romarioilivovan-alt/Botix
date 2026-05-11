@@ -429,7 +429,7 @@ class RealExecutor:
         *,
         signal_ts: float = 0.0,
         spread_bps_at_quote: Optional[float] = None,
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, Optional[Any]]:
         st = self.agg.compute_stats(symbol)
         ov = self._override_for(symbol)
         if ov is not None and ov.algorithms:
@@ -439,16 +439,16 @@ class RealExecutor:
         strict_filters = signal_ts <= 0 and spread_bps_at_quote is None
         if strict_filters:
             if st.blocked_reason:
-                return False, st.blocked_reason
+                return False, st.blocked_reason, st
             if not st.side_hint:
-                return False, "no_side_hint"
+                return False, "no_side_hint", st
             if st.side_hint != side:
-                return False, f"side_flip={st.side_hint}"
+                return False, f"side_flip={st.side_hint}", st
             min_entry_score = self._min_entry_score_for(symbol)
             if st.score < min_entry_score:
-                return False, f"score {st.score:.2f} < {min_entry_score:.2f}"
+                return False, f"score {st.score:.2f} < {min_entry_score:.2f}", st
         elif st.side_hint and st.side_hint != side:
-            return False, f"side_flip={st.side_hint}"
+            return False, f"side_flip={st.side_hint}", st
         max_age_ms = self._signal_max_age_ms_for(symbol)
         if max_age_ms > 0 and signal_ts > 0:
             age_ms = (time.time() - signal_ts) * 1000.0
@@ -459,7 +459,7 @@ class RealExecutor:
                     age_ms <= age_limit_ms + grace_ms
                     and self._fresh_books_for_age_grace(st)
                 ):
-                    return False, f"signal_age={age_ms:.0f}ms"
+                    return False, f"signal_age={age_ms:.0f}ms", st
         max_spread_drift = self._pre_submit_max_spread_drift_bps_for(symbol)
         if max_spread_drift > 0 and spread_bps_at_quote is not None and st.spread_bps is not None:
             if side == "LONG":
@@ -467,8 +467,8 @@ class RealExecutor:
             else:
                 spread_drift = spread_bps_at_quote - st.spread_bps
             if spread_drift > max_spread_drift:
-                return False, f"spread_drift={spread_drift:.2f}bps"
-        return True, ""
+                return False, f"spread_drift={spread_drift:.2f}bps", st
+        return True, "", st
 
     def _fill_respects_fair(
         self,
@@ -728,7 +728,7 @@ class RealExecutor:
                     continue
                 if now < q.taker_submit_at:
                     continue
-                ok_signal, why_signal = self._signal_valid_now(
+                ok_signal, why_signal, agg_stats = self._signal_valid_now(
                     sym,
                     q.side,
                     signal_ts=q.signal_ts,
@@ -749,8 +749,7 @@ class RealExecutor:
                     raw_price *= (1.0 - buf_bps / 1e4)
                 tick = await self._tick_size(sym)
                 price, _ = _snap_price(float(raw_price), tick, q.side, for_sl=False)
-                agg_stats = self.agg.compute_stats(sym)
-                fair = float(agg_stats.fair or 0.0)
+                fair = float(agg_stats.fair or 0.0) if agg_stats else 0.0
                 ok_fill, why_fill = self._fill_respects_fair(
                     sym, q.side, q.entry_algo, price, fair
                 )
@@ -820,7 +819,7 @@ class RealExecutor:
                 await self._cancel_quote(q, reason="timeout")
                 continue
 
-            ok_signal, why_signal = self._signal_valid_now(
+            ok_signal, why_signal, agg_stats_recheck = self._signal_valid_now(
                 sym,
                 q.side,
                 signal_ts=q.signal_ts,
@@ -833,10 +832,12 @@ class RealExecutor:
             # Detect fill: query order state OR check positions
             filled = await self._is_quote_filled(q)
             if filled:
+                # Use the recheck stats if available, otherwise fall back to earlier compute
+                stats_for_fill = agg_stats_recheck if agg_stats_recheck else agg_stats
                 materialized = await self._materialize_filled_quote(
                     q,
-                    fair=agg_stats.fair,
-                    sigma=agg_stats.sigma_spread,
+                    fair=stats_for_fill.fair,
+                    sigma=stats_for_fill.sigma_spread,
                     retry_delays=(0.0, 0.3),
                 )
                 if not materialized:
