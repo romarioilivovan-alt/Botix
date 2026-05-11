@@ -2,8 +2,9 @@
   "mode": "paper",
   "autostart": false,
   "mexc_web": {
-    "web_uid": "",
-    "device_id": "",
+    "web_uid": "YOUR_WEB_UID_HERE",
+    "device_id": "YOUR_DEVICE_ID_HERE",
+    "mhash": "YOUR_MHASH_HERE",
     "proxy": null
   },
   "universe": {

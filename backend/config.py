@@ -328,6 +328,17 @@ def load_config() -> AppConfig:
     if not isinstance(data, dict):
         return cfg
 
+    # Validate web_uid is configured (not a placeholder)
+    mexc_web_data = data.get("mexc_web", {})
+    if isinstance(mexc_web_data, dict):
+        web_uid = str(mexc_web_data.get("web_uid", "")).strip()
+        if not web_uid or web_uid == "YOUR_WEB_UID_HERE":
+            raise ValueError(
+                "MEXC web_uid is not configured. "
+                "Please copy config.example.json to config.json and fill in your actual MEXC credentials. "
+                "web_uid should start with 'WEB' followed by your account hash."
+            )
+
     # Extract symbol_overrides before generic merge (list-of-dicts, not a nested dataclass)
     raw_overrides = data.pop("symbol_overrides", None)
     _merge_dataclass(cfg, data)
