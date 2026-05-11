@@ -436,22 +436,35 @@ class RealExecutor:
             self.opp.evaluate_multi(symbol, st, ov)
         else:
             self.opp.evaluate(symbol, st)
+
+        # Calculate age_ms for logging
+        age_ms = None
+        if signal_ts > 0:
+            age_ms = (time.time() - signal_ts) * 1000.0
+
         strict_filters = signal_ts <= 0 and spread_bps_at_quote is None
         if strict_filters:
             if st.blocked_reason:
+                self._log_signal_decision(symbol, side, st, "rejected", st.blocked_reason, age_ms)
                 return False, st.blocked_reason, st
             if not st.side_hint:
+                self._log_signal_decision(symbol, side, st, "rejected", "no_side_hint", age_ms)
                 return False, "no_side_hint", st
             if st.side_hint != side:
-                return False, f"side_flip={st.side_hint}", st
+                reason = f"side_flip={st.side_hint}"
+                self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                return False, reason, st
             min_entry_score = self._min_entry_score_for(symbol)
             if st.score < min_entry_score:
-                return False, f"score {st.score:.2f} < {min_entry_score:.2f}", st
+                reason = f"score {st.score:.2f} < {min_entry_score:.2f}"
+                self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                return False, reason, st
         elif st.side_hint and st.side_hint != side:
-            return False, f"side_flip={st.side_hint}", st
+            reason = f"side_flip={st.side_hint}"
+            self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+            return False, reason, st
         max_age_ms = self._signal_max_age_ms_for(symbol)
         if max_age_ms > 0 and signal_ts > 0:
-            age_ms = (time.time() - signal_ts) * 1000.0
             age_limit_ms = float(max_age_ms)
             if age_ms > age_limit_ms:
                 grace_ms = self._signal_age_grace_ms_for(symbol)
@@ -459,7 +472,9 @@ class RealExecutor:
                     age_ms <= age_limit_ms + grace_ms
                     and self._fresh_books_for_age_grace(st)
                 ):
-                    return False, f"signal_age={age_ms:.0f}ms", st
+                    reason = f"signal_age={age_ms:.0f}ms"
+                    self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                    return False, reason, st
         max_spread_drift = self._pre_submit_max_spread_drift_bps_for(symbol)
         if max_spread_drift > 0 and spread_bps_at_quote is not None and st.spread_bps is not None:
             if side == "LONG":
@@ -467,8 +482,42 @@ class RealExecutor:
             else:
                 spread_drift = spread_bps_at_quote - st.spread_bps
             if spread_drift > max_spread_drift:
-                return False, f"spread_drift={spread_drift:.2f}bps", st
+                reason = f"spread_drift={spread_drift:.2f}bps"
+                self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                return False, reason, st
+
+        # Signal accepted
+        self._log_signal_decision(symbol, side, st, "accepted", None, age_ms)
         return True, "", st
+
+    def _log_signal_decision(
+        self,
+        symbol: str,
+        side: str,
+        st: Any,
+        decision: str,
+        reason: Optional[str],
+        age_ms: Optional[float],
+    ) -> None:
+        """Log signal decision to persistence for observability."""
+        try:
+            import asyncio
+            asyncio.create_task(
+                self.state.store.log_signal_decision(
+                    symbol=symbol,
+                    decision=decision,
+                    side=side,
+                    strategy=getattr(st, "selected_algorithm", None),
+                    z_score=getattr(st, "z_score", None),
+                    spread_bps=getattr(st, "spread_bps", None),
+                    fair=getattr(st, "fair", None),
+                    mexc_mid=getattr(st, "mexc_mid", None),
+                    reason=reason,
+                    age_ms=age_ms,
+                )
+            )
+        except Exception:
+            pass
 
     def _fill_respects_fair(
         self,

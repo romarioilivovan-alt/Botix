@@ -74,6 +74,23 @@ CREATE TABLE IF NOT EXISTS candidates_log (
 );
 
 CREATE INDEX IF NOT EXISTS ix_cand_ts ON candidates_log(ts);
+
+CREATE TABLE IF NOT EXISTS signal_decisions (
+    ts REAL NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT,
+    strategy TEXT,
+    z_score REAL,
+    spread_bps REAL,
+    fair REAL,
+    mexc_mid REAL,
+    decision TEXT NOT NULL,
+    reason TEXT,
+    age_ms REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_signal_decisions_ts ON signal_decisions(ts);
+CREATE INDEX IF NOT EXISTS idx_signal_decisions_symbol ON signal_decisions(symbol);
 """
 
 
@@ -283,4 +300,45 @@ class Store:
             )
         rows = await cur.fetchall()
         await cur.close()
-        return list(reversed([dict(r) for r in rows]))
+        return [dict(r) for r in rows]
+
+    async def log_signal_decision(
+        self,
+        symbol: str,
+        decision: str,
+        *,
+        side: Optional[str] = None,
+        strategy: Optional[str] = None,
+        z_score: Optional[float] = None,
+        spread_bps: Optional[float] = None,
+        fair: Optional[float] = None,
+        mexc_mid: Optional[float] = None,
+        reason: Optional[str] = None,
+        age_ms: Optional[float] = None,
+    ) -> None:
+        """Log a signal decision (accepted or rejected) for observability."""
+        if not self._db:
+            return
+        try:
+            await self._db.execute(
+                """INSERT INTO signal_decisions
+                   (ts, symbol, side, strategy, z_score, spread_bps, fair, mexc_mid, decision, reason, age_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    time.time(),
+                    symbol,
+                    side,
+                    strategy,
+                    z_score,
+                    spread_bps,
+                    fair,
+                    mexc_mid,
+                    decision,
+                    reason,
+                    age_ms,
+                ),
+            )
+            await self._db.commit()
+        except Exception:
+            pass
+
