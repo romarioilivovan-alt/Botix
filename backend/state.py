@@ -12,6 +12,7 @@ class OrderBook:
     bids: List[List[float]] = field(default_factory=list)
     asks: List[List[float]] = field(default_factory=list)
     ts: float = 0.0
+    version: int = 0  # Incremented on each update for cache invalidation
 
     @property
     def best_bid(self) -> Optional[float]:

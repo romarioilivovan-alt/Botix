@@ -27,6 +27,35 @@ STOCK_SYMBOLS = frozenset({
 })
 
 
+class RollingWelford:
+    """O(1) update, O(1) σ query for a time-windowed sample stream."""
+
+    def __init__(self, window_sec: float):
+        self.window_sec = window_sec
+        self._buf: Deque[Tuple[float, float]] = deque()
+        self._sum = 0.0
+        self._sum_sq = 0.0
+
+    def push(self, ts: float, x: float) -> None:
+        self._buf.append((ts, x))
+        self._sum += x
+        self._sum_sq += x * x
+        cutoff = ts - self.window_sec
+        while self._buf and self._buf[0][0] < cutoff:
+            _, old = self._buf.popleft()
+            self._sum -= old
+            self._sum_sq -= old * old
+
+    def stats(self) -> Optional[Tuple[float, float, int]]:
+        """Returns (mean, std, count) or None if insufficient samples."""
+        n = len(self._buf)
+        if n < 2:
+            return None
+        mean = self._sum / n
+        var = max(0.0, self._sum_sq / n - mean * mean)
+        return mean, math.sqrt(var), n
+
+
 def _book_imbalance_log(book: OrderBook, levels: int = 5, contract_size: float = 1.0) -> Optional[float]:
     """log(bid_notional / ask_notional) over top-N levels. Positive = bid-heavy."""
     bid_n = 0.0
@@ -59,7 +88,7 @@ def _max_burst_in_window(samples: Deque[Tuple[float, float]], now: float,
         return None
     best_signed = 0.0
     # Slide a 1s window from earliest to latest sample
-    relevant.sort()
+    # deque is already ordered by insertion time, no need to sort
     i = 0
     bucket_sum = 0.0
     for j in range(len(relevant)):
@@ -77,9 +106,9 @@ class _SymbolAgg:
     mexc_book: OrderBook = field(default_factory=OrderBook)
     binance_book: OrderBook = field(default_factory=OrderBook)
 
-    # Rolling spread samples (ts, MEXC_mid - F) — limited window
-    spread_samples: Deque[Tuple[float, float]] = field(
-        default_factory=lambda: deque(maxlen=4000)
+    # Rolling spread Welford for O(1) σ computation
+    spread_welford: RollingWelford = field(
+        default_factory=lambda: RollingWelford(30.0)
     )
     # Rolling fair samples (ts, F)
     fair_samples: Deque[Tuple[float, float]] = field(
@@ -107,6 +136,11 @@ class _SymbolAgg:
     # snapshot replacement rather than an incremental delta stream.
     mexc_bids_map: Dict[float, float] = field(default_factory=dict)
     mexc_asks_map: Dict[float, float] = field(default_factory=dict)
+
+    # Cache for compute_stats to avoid redundant calculations
+    _last_stats: Optional[SymbolStats] = None
+    _last_stats_ts: float = 0.0
+    _last_stats_book_ver: int = -1
 
 
 class Aggregator:
@@ -177,6 +211,7 @@ class Aggregator:
         except Exception:
             return
         agg.binance_book = OrderBook(bids=b, asks=a, ts=ts)
+        agg.binance_book.version += 1
 
         mid = agg.binance_book.mid
         if mid is not None:
@@ -206,45 +241,23 @@ class Aggregator:
         agg = self._symbols.get(mexc_symbol)
         if not agg:
             return
-        # `sub.depth.full` sends full top-N snapshots. Replace the local book
-        # every push so stale levels cannot survive across updates.
-        next_bids: Dict[float, float] = {}
-        for it in bids or []:
-            try:
-                p = float(it[0])
-                q = float(it[1])
-            except Exception:
-                continue
-            if q > 0:
-                next_bids[p] = q
-        next_asks: Dict[float, float] = {}
-        for it in asks or []:
-            try:
-                p = float(it[0])
-                q = float(it[1])
-            except Exception:
-                continue
-            if q > 0:
-                next_asks[p] = q
-
-        agg.mexc_bids_map = next_bids
-        agg.mexc_asks_map = next_asks
-
-        # snapshot top
-        if agg.mexc_bids_map:
-            sorted_bids = sorted(agg.mexc_bids_map.items(), key=lambda x: -x[0])
-        else:
-            sorted_bids = []
-        if agg.mexc_asks_map:
-            sorted_asks = sorted(agg.mexc_asks_map.items(), key=lambda x: x[0])
-        else:
-            sorted_asks = []
+        # `sub.depth.full` sends full top-N snapshots already sorted by MEXC.
+        # bids are descending, asks are ascending - no need to sort again.
+        try:
+            b = [(float(p), float(q)) for p, q in (bids or [])[:50] if float(q) > 0]
+            a = [(float(p), float(q)) for p, q in (asks or [])[:50] if float(q) > 0]
+        except (TypeError, ValueError):
+            return
+        if not b or not a:
+            return
 
         agg.mexc_book = OrderBook(
-            bids=[[p, q] for p, q in sorted_bids[:50]],
-            asks=[[p, q] for p, q in sorted_asks[:50]],
+            bids=[[p, q] for p, q in b],
+            asks=[[p, q] for p, q in a],
             ts=ts,
         )
+        agg.mexc_book.version += 1
+
         # Track own MEXC mid for Bollinger-band self-reverting strategy
         m_mid = agg.mexc_book.mid
         if m_mid is not None and m_mid > 0:
@@ -269,13 +282,33 @@ class Aggregator:
         b_mid = agg.binance_book.mid
         if m_mid is None or b_mid is None:
             return
-        agg.spread_samples.append((ts, m_mid - b_mid))
+        agg.spread_welford.push(ts, m_mid - b_mid)
 
     def compute_stats(self, mexc_symbol: str) -> SymbolStats:
         agg = self._symbols.get(mexc_symbol)
         st = SymbolStats()
         if not agg:
             return st
+
+        # Check cache: if books haven't changed and cache is fresh (<50ms), return cached stats
+        cur_ver = agg.mexc_book.version + agg.binance_book.version
+        now = time.time()
+        if (agg._last_stats is not None
+            and cur_ver == agg._last_stats_book_ver
+            and (now - agg._last_stats_ts) < 0.05):
+            return agg._last_stats
+
+        # Compute fresh stats
+        st = self._compute_stats_impl(mexc_symbol, agg, now)
+
+        # Update cache
+        agg._last_stats = st
+        agg._last_stats_ts = now
+        agg._last_stats_book_ver = cur_ver
+        return st
+
+    def _compute_stats_impl(self, mexc_symbol: str, agg: _SymbolAgg, now: float) -> SymbolStats:
+        st = SymbolStats()
         contract_size = self.contract_size_for(mexc_symbol)
 
         now = time.time()
@@ -314,21 +347,18 @@ class Aggregator:
         st.spread = spread
         st.spread_bps = spread / st.fair * 1e4 if st.fair > 0 else None
 
-        # σ over rolling window
-        win = float(self.cfg.strategy.sigma_spread_window_sec)
-        cutoff = now - win
-        samples = [v for ts_s, v in agg.spread_samples if ts_s >= cutoff]
+        # σ over rolling window using Welford algorithm
+        welford_stats = agg.spread_welford.stats()
         min_samples = int(getattr(self.cfg.strategy, "min_spread_samples", 60))
         min_sigma_bps = float(getattr(self.cfg.strategy, "min_sigma_bps", 0.3))
-        if len(samples) >= min_samples:
-            mean = sum(samples) / len(samples)
-            var = sum((x - mean) ** 2 for x in samples) / len(samples)
-            sigma = math.sqrt(var) if var > 0 else 0.0
-            st.sigma_spread = sigma
-            # Reject z computation when σ is unrealistically small (warm-up artifact)
-            min_sigma = (st.fair or 0.0) * (min_sigma_bps / 1e4)
-            if sigma > 0 and sigma >= min_sigma:
-                st.z_score = spread / sigma
+        if welford_stats is not None:
+            mean, sigma, count = welford_stats
+            if count >= min_samples:
+                st.sigma_spread = sigma
+                # Reject z computation when σ is unrealistically small (warm-up artifact)
+                min_sigma = (st.fair or 0.0) * (min_sigma_bps / 1e4)
+                if sigma > 0 and sigma >= min_sigma:
+                    st.z_score = spread / sigma
 
         # OFI
         ofi_win = float(self.cfg.strategy.ofi_window_sec)
@@ -413,14 +443,12 @@ class Aggregator:
     def cleanup_old_samples(self) -> None:
         """Trim sample buffers occasionally to bound memory."""
         now = time.time()
-        spread_cut = now - max(60.0, self.cfg.strategy.sigma_spread_window_sec * 2)
         ofi_cut = now - max(5.0, self.cfg.strategy.ofi_window_sec * 4)
         fair_cut = now - max(5.0, self.cfg.strategy.fair_velocity_window_sec * 4)
         mexc_spread_cut = now - 60.0
 
         for agg in self._symbols.values():
-            while agg.spread_samples and agg.spread_samples[0][0] < spread_cut:
-                agg.spread_samples.popleft()
+            # spread_welford self-trims on push, no manual cleanup needed
             while agg.trade_samples and agg.trade_samples[0][0] < ofi_cut:
                 agg.trade_samples.popleft()
             while agg.fair_samples and agg.fair_samples[0][0] < fair_cut:
