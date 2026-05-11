@@ -97,6 +97,10 @@ class _SymbolAgg:
     mexc_spread_samples: Deque[Tuple[float, float]] = field(
         default_factory=lambda: deque(maxlen=400)
     )
+    # Rolling MEXC bid-ask spread samples for stocks without Binance reference
+    mexc_ba_samples: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=2000)
+    )
 
     # MEXC raw depth buffers. The websocket client now subscribes to
     # `sub.depth.full`, so every push is treated as a fresh top-of-book
@@ -283,36 +287,32 @@ class Aggregator:
 
         st.mexc_mid = agg.mexc_book.mid
 
-        # For stocks without Binance reference, use MEXC price as fair
+        # For stocks without Binance reference, don't contaminate spread_samples
         is_stock = mexc_symbol in STOCK_SYMBOLS
         if is_stock and agg.binance_book.mid is None:
-            # Use MEXC price as fair for stocks (no Binance reference available)
-            st.fair = st.mexc_mid
-            logger.info(f"[STOCK] {mexc_symbol}: Using MEXC price as fair (no Binance ref): {st.fair}")
+            # No external fair available - return None and mark as unavailable
+            st.fair = None
+            st.spread = None
+            st.spread_bps = None
+            st.z_score = 0.0
+            st.external_fair_available = False
+            # Record MEXC bid-ask spread in separate buffer for bb_revert strategy
+            if agg.mexc_book.best_bid is not None and agg.mexc_book.best_ask is not None:
+                ba = agg.mexc_book.best_ask - agg.mexc_book.best_bid
+                agg.mexc_ba_samples.append((now, ba))
+            logger.debug(f"[STOCK] {mexc_symbol}: No Binance ref, external_fair_available=False")
         else:
             # Normal case: use Binance as fair reference
             st.fair = agg.binance_book.mid
+            st.external_fair_available = True
 
         if st.fair is None or st.mexc_mid is None:
             return st
 
-        # For stocks using MEXC as fair, spread is 0 (no arbitrage opportunity)
-        # Use bid-ask spread instead for volatility estimation
-        if is_stock and agg.binance_book.mid is None:
-            spread = 0.0
-            st.spread = spread
-            st.spread_bps = 0.0
-            # Use MEXC bid-ask spread for sigma calculation
-            if agg.mexc_book.bids and agg.mexc_book.asks:
-                bid = float(agg.mexc_book.bids[0][0]) if agg.mexc_book.bids else st.mexc_mid
-                ask = float(agg.mexc_book.asks[0][0]) if agg.mexc_book.asks else st.mexc_mid
-                ba_spread = ask - bid
-                agg.spread_samples.append((now, ba_spread))
-        else:
-            # Normal case: spread between MEXC and Binance
-            spread = st.mexc_mid - st.fair
-            st.spread = spread
-            st.spread_bps = spread / st.fair * 1e4 if st.fair > 0 else None
+        # Normal case: spread between MEXC and Binance
+        spread = st.mexc_mid - st.fair
+        st.spread = spread
+        st.spread_bps = spread / st.fair * 1e4 if st.fair > 0 else None
 
         # σ over rolling window
         win = float(self.cfg.strategy.sigma_spread_window_sec)

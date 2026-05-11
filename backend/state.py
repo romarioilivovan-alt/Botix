@@ -129,6 +129,7 @@ class SymbolStats:
     spread_bps: Optional[float] = None  # spread / F * 1e4
     z_score: Optional[float] = None
     sigma_spread: Optional[float] = None  # std of spread (price units)
+    external_fair_available: bool = True  # False for stocks without Binance reference
 
     # Order flow imbalance (Binance trades) — positive = aggressive buys
     ofi: Optional[float] = None         # signed USDT volume imbalance

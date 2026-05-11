@@ -164,6 +164,14 @@ class OpportunityEngine:
             st.blocked_reason = "no_books"
             return st
 
+        # If external fair is not available, restrict to strategies that don't require it
+        if not getattr(st, "external_fair_available", True):
+            allowed_strategies = {"bb_revert"}
+            algo = str(getattr(self.cfg.strategy, "algorithm", "meanrev")).lower()
+            if algo not in allowed_strategies:
+                st.blocked_reason = "no_external_fair"
+                return st
+
         algo = str(getattr(self.cfg.strategy, "algorithm", "meanrev")).lower()
         st.selected_algorithm = algo
 
@@ -246,6 +254,17 @@ class OpportunityEngine:
         algos = list(override.algorithms or [])
         if not algos:
             return self.evaluate(symbol, st)
+
+        # If external fair is not available, filter to allowed strategies
+        if not getattr(st, "external_fair_available", True):
+            allowed_strategies = {"bb_revert"}
+            algos = [a for a in algos if str(a).lower() in allowed_strategies]
+            if not algos:
+                st.score = 0.0
+                st.side_hint = None
+                st.blocked_reason = "no_external_fair"
+                st.selected_algorithm = None
+                return st
 
         mode = str(override.algo_mode or "ANY").upper()
         min_score_threshold = 1.2
