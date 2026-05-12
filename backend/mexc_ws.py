@@ -92,8 +92,10 @@ class MexcMultiWS:
                 pass
 
     async def run(self, initial: Iterable[str]) -> None:
+        logger.info(f"MexcMultiWS.run() started with {len(list(initial))} symbols")
         self._desired = set(initial)
         self._stop.clear()
+        logger.info(f"MexcMultiWS desired symbols: {self._desired}")
 
         # Start watchdog and heartbeat tasks
         if self._watchdog_task is None or self._watchdog_task.done():
@@ -102,6 +104,7 @@ class MexcMultiWS:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         backoff = 1.0
+        logger.info("MexcMultiWS entering main loop")
         while not self._stop.is_set():
             try:
                 async with websockets.connect(

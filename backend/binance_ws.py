@@ -98,14 +98,17 @@ class BinanceMultiWS:
                 logger.warning("Binance %s send failed: %s", method, e)
 
     async def run(self, initial: Iterable[str]) -> None:
+        logger.info(f"BinanceMultiWS.run() started with {len(list(initial))} symbols")
         self._desired = set(s.upper() for s in initial)
         self._stop.clear()
+        logger.info(f"BinanceMultiWS desired symbols: {self._desired}")
 
         # Start watchdog task
         if self._watchdog_task is None or self._watchdog_task.done():
             self._watchdog_task = asyncio.create_task(self._stall_watchdog())
 
         backoff = 1.0
+        logger.info("BinanceMultiWS entering main loop")
         while not self._stop.is_set():
             try:
                 # Build the URL with the initial subset baked in (avoids race on first subscribe).
