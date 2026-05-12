@@ -79,12 +79,20 @@ class Engine:
         )
         self.mexc_ws = MexcMultiWS(on_depth=self._on_mexc_depth)
 
-        # Tasks
+        # Tasks with exception handling
+        async def safe_task(coro, name: str):
+            try:
+                await coro
+            except Exception as e:
+                logger.exception(f"Task {name} failed: {e}")
+
         binance_initial = [self.universe.reference_for(s) for s in self.universe.working_set if self.universe.reference_for(s)]
-        self._tasks.append(asyncio.create_task(self.binance_ws.run(binance_initial), name="binance_ws"))
-        self._tasks.append(asyncio.create_task(self.mexc_ws.run(self.universe.working_set), name="mexc_ws"))
-        self._tasks.append(asyncio.create_task(self.universe.loop(self._on_universe_change), name="universe"))
-        self._tasks.append(asyncio.create_task(self._connectivity_watcher(), name="conn_watch"))
+        logger.info(f"Starting binance_ws with {len(binance_initial)} symbols: {binance_initial}")
+        self._tasks.append(asyncio.create_task(safe_task(self.binance_ws.run(binance_initial), "binance_ws"), name="binance_ws"))
+        logger.info(f"Starting mexc_ws with {len(self.universe.working_set)} symbols: {self.universe.working_set}")
+        self._tasks.append(asyncio.create_task(safe_task(self.mexc_ws.run(self.universe.working_set), "mexc_ws"), name="mexc_ws"))
+        self._tasks.append(asyncio.create_task(safe_task(self.universe.loop(self._on_universe_change), "universe"), name="universe"))
+        self._tasks.append(asyncio.create_task(safe_task(self._connectivity_watcher(), "conn_watch"), name="conn_watch"))
 
         # Auth ping (best-effort)
         if self.cfg.mexc_web.web_uid.strip():
