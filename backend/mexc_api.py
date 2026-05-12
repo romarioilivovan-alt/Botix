@@ -42,7 +42,7 @@ FAIR_PRICE_CACHE_TTL = 0.7
 LAST_PRICE_CACHE_TTL = 0.7
 TICKER_CACHE_TTL = 0.7
 
-PRICE_SAFETY_K = 1.01  # небольшой запас по цене (1%)
+PRICE_SAFETY_K = 1.005  # небольшой запас по цене (0.5%) — снижено для ускорения фиксации объёма
 
 
 _CONTRACT_CACHE: Dict[str, tuple[dict, float]] = {}
@@ -136,7 +136,7 @@ class MexcFuturesAPI:
                     ssl=False,
                     resolver=aiohttp.ThreadedResolver(),
                     ttl_dns_cache=300,
-                    keepalive_timeout=30,
+                    keepalive_timeout=120,
                     limit=100,
                     limit_per_host=16,
                     enable_cleanup_closed=True,
@@ -147,7 +147,7 @@ class MexcFuturesAPI:
                 ssl=False,
                 resolver=aiohttp.ThreadedResolver(),
                 ttl_dns_cache=300,
-                keepalive_timeout=30,
+                keepalive_timeout=120,
                 limit=100,
                 limit_per_host=16,
                 enable_cleanup_closed=True,
@@ -213,13 +213,29 @@ class MexcFuturesAPI:
             self.trade_session = None
 
         if self.trade_session is None or self.trade_session.closed:
-            timeout = aiohttp.ClientTimeout(total=10)
+            timeout = aiohttp.ClientTimeout(total=10, connect=3, sock_connect=3)
             connector, proxy_for_request = self._build_connector()
             self.trade_session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
             )
             self._trade_session_proxy = proxy_for_request
+
+    async def preconnect(self) -> None:
+        """Warm up the TCP+TLS connection to MEXC so the first order does
+        not pay for a cold handshake (~50-100 ms saved on first trade)."""
+        await self._ensure_session()
+        await self._ensure_trade_session()
+        try:
+            # Public endpoint, no signature needed — good for warming TLS
+            await self._request_market("api/v1/contract/ping")
+        except Exception:
+            pass
+        # Also warm the authenticated trade session
+        try:
+            await self.auth_ping()
+        except Exception:
+            pass
 
     async def __aenter__(self) -> "MexcFuturesAPI":
         await self._ensure_session()
@@ -682,7 +698,8 @@ class MexcFuturesAPI:
         }
         if "price" in payload:
             log_payload["price"] = payload["price"]
-        logger.info("Creating order: %s", log_payload)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Creating order: %s", log_payload)
 
         return await self._request("POST", "private/order/create", data=payload)
 

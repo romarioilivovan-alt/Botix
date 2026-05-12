@@ -97,6 +97,7 @@ class RealExecutor:
         self._equity_log_last_ts = 0.0
         self._balance_refresh_last_ts = 0.0
         self._max_lev_cache: Dict[str, int] = {}
+        self._tick_cache: Dict[str, Decimal] = {}  # symbol -> tick size (immutable)
         self._raw_missing_counts: Dict[str, int] = {}
         self._positions_refresh_error_last_ts = 0.0
         self._foreign_position_warned: Set[str] = set()
@@ -130,6 +131,31 @@ class RealExecutor:
             )
             self.cfg.strategy.entry_latency_ms = 0
 
+        # Prewarm tick/leverage/contract caches for the working universe so
+        # the first trade does not pay for a blocking HTTP fetch.
+        await self._prewarm_symbol_caches()
+
+    async def _prewarm_symbol_caches(self) -> None:
+        """Fetch tick size and max leverage for all configured symbols upfront."""
+        syms: set[str] = set()
+        for sym in (self.state.universe or []):
+            if sym:
+                syms.add(str(sym).upper())
+        for ov in (self.cfg.symbol_overrides or []):
+            if getattr(ov, "enabled", True) and ov.symbol:
+                syms.add(str(ov.symbol).upper())
+        if not syms:
+            return
+        tasks = []
+        for sym in syms:
+            tasks.append(self._tick_size(sym))
+            tasks.append(self._max_leverage(sym))
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info("prewarmed symbol caches for %d symbols", len(syms))
+        except Exception as e:
+            logger.warning("prewarm caches error: %s", e)
+
     async def _fetch_account_balances(self) -> tuple[float, float]:
         try:
             snap = await self.trader.get_usdt_balance_snapshot()
@@ -156,24 +182,27 @@ class RealExecutor:
         return lev
 
     async def _tick_size(self, symbol: str) -> Decimal:
+        # In-memory tick cache (never changes once fetched from MEXC)
+        cached = self._tick_cache.get(symbol)
+        if cached is not None:
+            return cached
         try:
             info = await self.trader.api.get_contract_info_cached(symbol)
         except Exception:
             info = None
+        result = Decimal("0.00000001")
         if info:
             pu = info.get("priceUnit")
             ps = info.get("priceScale")
             try:
                 if pu is not None and float(pu) > 0:
-                    return Decimal(str(pu))
+                    result = Decimal(str(pu))
+                elif ps is not None:
+                    result = Decimal(1).scaleb(-int(ps))
             except Exception:
                 pass
-            try:
-                if ps is not None:
-                    return Decimal(1).scaleb(-int(ps))
-            except Exception:
-                pass
-        return Decimal("0.00000001")
+        self._tick_cache[symbol] = result
+        return result
 
     def _sl_pct_for(self, symbol: str) -> float:
         """Return backstop SL price fraction for this symbol.
@@ -748,10 +777,26 @@ class RealExecutor:
                 spread_bps_at_quote=spread_bps_at_quote,
             )
             self._quotes[sym] = q
-            await self.state.add_log(
-                "debug",
-                f"[real] taker queued {sym} {opp.side} (submit in {latency_ms}ms, q_age={queue_age_ms:.0f}ms)",
-            )
+            # Queue debug message kept at debug level to reduce I/O pressure
+            if queue_age_ms > 300.0:
+                await self.state.add_log(
+                    "debug",
+                    f"[real] taker queued {sym} {opp.side} (submit in {latency_ms}ms, q_age={queue_age_ms:.0f}ms)",
+                )
+            # FAST PATH: when latency=0, fire IOC inline without waiting for
+            # the next _fast_loop tick. Saves ~25ms average.
+            if latency_ms == 0:
+                try:
+                    await self._submit_taker_ioc_now(
+                        q,
+                        tick=tick,
+                        t_decision_start=t_decision_start,
+                        binance_depth_age_ms=binance_depth_age_ms,
+                        mexc_depth_age_ms=mexc_depth_age_ms,
+                    )
+                except Exception as e:
+                    logger.exception("inline taker submit error: %s", e)
+                    self._quotes.pop(sym, None)
             return
         else:
             # Limit-maker entry
@@ -814,6 +859,121 @@ class RealExecutor:
             "info",
             f"[real] {'ioc' if taker_entry else 'quote'} {sym} {opp.side} @ {price:.6g} "
             f"(notional={decision.notional_usdt:.2f}, lev={decision.leverage}, oid={order_id})",
+        )
+
+    async def _submit_taker_ioc_now(
+        self,
+        q: _Quote,
+        *,
+        tick: Decimal,
+        t_decision_start: float,
+        binance_depth_age_ms: Optional[float],
+        mexc_depth_age_ms: Optional[float],
+    ) -> None:
+        """Inline IOC submission (latency=0 path).
+
+        Mirrors the submit branch in _reconcile_quotes but runs synchronously
+        off the WS-triggered signal, saving the 25-50ms fast_loop wait.
+        Not called when entry_latency_ms > 0 (then we honour the delay).
+        """
+        sym = q.symbol
+        book = self.agg.get_book(sym)
+        if not book or book.best_bid is None or book.best_ask is None:
+            self._quotes.pop(sym, None)
+            return
+
+        # Re-validate the signal against the freshest stats
+        ok_signal, why_signal, agg_stats = self._signal_valid_now(
+            sym,
+            q.side,
+            signal_ts=q.signal_ts,
+            spread_bps_at_quote=q.spread_bps_at_quote,
+        )
+        if not ok_signal:
+            self._quotes.pop(sym, None)
+            await self.state.add_log("debug", f"[real] skip {sym} {q.side}: stale signal ({why_signal})")
+            return
+
+        raw_price = float(book.best_ask if q.side == "LONG" else book.best_bid)
+        if raw_price <= 0:
+            self._quotes.pop(sym, None)
+            return
+        buf_bps = self._taker_ioc_price_buffer_bps_for(sym)
+        if q.side == "LONG":
+            raw_price *= (1.0 + buf_bps / 1e4)
+        else:
+            raw_price *= (1.0 - buf_bps / 1e4)
+        price, _ = _snap_price(float(raw_price), tick, q.side, for_sl=False)
+        fair = float(agg_stats.fair or 0.0) if agg_stats else 0.0
+        ok_fill, why_fill = self._fill_respects_fair(sym, q.side, q.entry_algo, price, fair)
+        if not ok_fill:
+            self._quotes.pop(sym, None)
+            await self.state.add_log("debug", f"[real] skip {sym} {q.side}: {why_fill}")
+            return
+
+        try:
+            res = await self.trader.open_ioc(sym, q.side, q.notional, q.leverage, price)
+        except Exception as e:
+            self._quotes.pop(sym, None)
+            await self.state.add_log("error", f"open_ioc failed {sym}: {e}")
+            return
+        if not res.get("success"):
+            self._quotes.pop(sym, None)
+            await self.state.add_log("warn", f"open_ioc reject {sym}: {res.get('message')}")
+            return
+
+        order_id = None
+        data = res.get("data") or {}
+        if isinstance(data, dict):
+            order_id = data.get("orderId") or data.get("order_id")
+        try:
+            q.order_id = int(order_id) if order_id is not None else None
+        except Exception:
+            q.order_id = None
+        now_ts = time.time()
+        q.price = price
+        q.placed_ts = now_ts
+        q.fair_at_quote = fair if fair > 0 else q.fair_at_quote
+        q.sigma_at_quote = float(agg_stats.sigma_spread or q.sigma_at_quote or 0.0)
+        q.z_at_quote = float(agg_stats.z_score or q.z_at_quote or 0.0)
+        q.taker_submit_at = None
+        try:
+            q.requested_vol = float(res.get("_requested_vol") or 0.0)
+        except Exception:
+            q.requested_vol = None
+        try:
+            final_vol = float(res.get("_final_vol") or 0.0)
+        except Exception:
+            final_vol = 0.0
+        if q.requested_vol and q.requested_vol > 0 and final_vol > 0:
+            q.fill_ratio = final_vol / q.requested_vol
+
+        # Latency probe
+        decision_ms = (time.perf_counter() - t_decision_start) * 1000.0
+        submit_latency_ms = (now_ts - q.signal_ts) * 1000.0 if q.signal_ts > 0 else None
+        self._log_latency_probe(
+            sym,
+            binance_depth_age_ms=binance_depth_age_ms,
+            mexc_depth_age_ms=mexc_depth_age_ms,
+            decision_ms=decision_ms,
+            submit_latency_ms=submit_latency_ms,
+        )
+
+        await self.state.add_log(
+            "info",
+            f"[real] ioc {sym} {q.side} @ {price:.6g} "
+            f"(notional={q.notional:.2f}, lev={q.leverage}, oid={q.order_id})",
+        )
+
+        # Materialise the fill immediately. The first retry delay is 0 so
+        # we do a fast lookup on the already-cached positions snapshot. If
+        # the exchange has not yet reported the fill, subsequent retries
+        # use small backoffs.
+        await self._materialize_filled_quote(
+            q,
+            fair=agg_stats.fair,
+            sigma=agg_stats.sigma_spread,
+            retry_delays=(0.0, 0.05, 0.1),
         )
 
     async def _reconcile_quotes(self) -> None:
@@ -1304,35 +1464,41 @@ class RealExecutor:
         pid = self._extract_position_id(pos_raw)
         if pid is not None:
             pos.mexc_position_id = pid
-            try:
-                # Pure trailing-stop strategy: only attach SL on the exchange.
-                # No fixed TP — bot trails SL upward locally and lets it hit.
-                res = await self.trader.place_stop_by_position(
-                    pid,
-                    stop_loss_price=sl_price,
-                    take_profit_price=None,
-                    side=q.side,
-                )
-                if res.get("success"):
-                    data = res.get("data")
-                    if isinstance(data, list):
-                        data = data[0] if data else None
-                    if isinstance(data, dict):
-                        for k in ("stopPlanOrderId", "stopPlanOrderID", "stopPlanId", "id"):
-                            if k in data and data[k] is not None:
-                                try:
-                                    pos.mexc_stop_plan_id = int(float(data[k]))
-                                    break
-                                except Exception:
-                                    pass
-                else:
-                    await self.state.add_log("warn", f"[real] SL place failed {q.symbol}: {res.get('message')}")
-            except Exception as e:
-                await self.state.add_log("error", f"[real] SL place exception {q.symbol}: {e}")
+            # Fire-and-forget: the SL is a safety net, not time-critical.
+            # Placing it off the hot path saves ~50ms on entry latency. The
+            # position trails SL locally anyway; this just arms exchange-side
+            # protection against disconnection.
+            async def _arm_sl_async() -> None:
+                try:
+                    res = await self.trader.place_stop_by_position(
+                        pid,
+                        stop_loss_price=sl_price,
+                        take_profit_price=None,
+                        side=q.side,
+                    )
+                    if res.get("success"):
+                        data = res.get("data")
+                        if isinstance(data, list):
+                            data = data[0] if data else None
+                        if isinstance(data, dict):
+                            for k in ("stopPlanOrderId", "stopPlanOrderID", "stopPlanId", "id"):
+                                if k in data and data[k] is not None:
+                                    try:
+                                        pos.mexc_stop_plan_id = int(float(data[k]))
+                                        break
+                                    except Exception:
+                                        pass
+                    else:
+                        await self.state.add_log("warn", f"[real] SL place failed {q.symbol}: {res.get('message')}")
+                except Exception as e:
+                    await self.state.add_log("error", f"[real] SL place exception {q.symbol}: {e}")
+
+            asyncio.create_task(_arm_sl_async(), name=f"sl_{q.symbol}")
 
         async with self.state.lock:
             self.state.positions[q.symbol] = pos
-        await self._persist_managed_position(pos)
+        # Persistence is also off the hot path
+        asyncio.create_task(self._persist_managed_position(pos), name=f"persist_{q.symbol}")
         self._raw_missing_counts.pop(q.symbol, None)
         await self.state.add_log(
             "info",
@@ -1515,7 +1681,7 @@ class RealExecutor:
         # Pull fresh position list once per tick
         raw_refresh_failed = False
         try:
-            raw_list = await self._get_positions_raw_cached(max_age_sec=0.12)
+            raw_list = await self._get_positions_raw_cached(max_age_sec=0.2)
         except Exception as e:
             raw_refresh_failed = True
             raw_list = []
@@ -1624,15 +1790,19 @@ class RealExecutor:
             min_hold_sec = float(getattr(self.cfg.strategy, "min_hold_sec", 3.0))
             if current_fair is not None and current_fair > 0 and pos.entry_price > 0:
                 cur_dev_bps = (mid - current_fair) / current_fair * 1e4
+                # Require a minimum realised move (in bps) before fair-cross exit
+                # to avoid the "PnL=0.00 exit" problem where MEXC catches fair
+                # but the trade hasn't earned enough to cover noise/fees.
+                min_exit_move_bps = max(0.0, exit_neutral_band_bps * 0.5)
                 # LONG was opened when MEXC < fair (negative dev), wait for return to ~0
                 if pos.side == "LONG" and cur_dev_bps >= -exit_neutral_band_bps:
-                    if age_sec >= min_hold_sec:
+                    if age_sec >= min_hold_sec and move_bps_now >= min_exit_move_bps:
                         pos.exit_signal_ts = now
                         await self._close_market(pos, raw, reason="fair_cross")
                         continue
                 # SHORT was opened when MEXC > fair (positive dev), wait for return to ~0
                 if pos.side == "SHORT" and cur_dev_bps <= exit_neutral_band_bps:
-                    if age_sec >= min_hold_sec:
+                    if age_sec >= min_hold_sec and move_bps_now >= min_exit_move_bps:
                         pos.exit_signal_ts = now
                         await self._close_market(pos, raw, reason="fair_cross")
                         continue

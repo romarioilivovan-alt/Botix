@@ -139,17 +139,15 @@ class MexcMultiWS:
 
                         msg_count += 1
 
-                        # Log ALL messages for debugging
-                        if msg_count <= 50:
-                            logger.info(f"MEXC message #{msg_count}: channel={msg.get('channel')}, symbol={msg.get('symbol')}")
+                        # Only log the first few messages for diagnosis
+                        if msg_count <= 5 and logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"MEXC message #{msg_count}: channel={msg.get('channel')}, symbol={msg.get('symbol')}")
 
                         if msg.get("channel") in {"push.depth", "push.depth.full"}:
                             payload = msg.get("data") or {}
                             sym = msg.get("symbol") or payload.get("symbol")
                             bids = payload.get("bids") or payload.get("b") or []
                             asks = payload.get("asks") or payload.get("a") or []
-                            if msg_count <= 10:
-                                logger.info(f"MEXC processing depth: sym={sym}, bids={len(bids)}, asks={len(asks)}")
                             try:
                                 await self.on_depth(sym, bids, asks, time.time())
                             except Exception as e:

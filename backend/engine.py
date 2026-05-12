@@ -51,6 +51,11 @@ class Engine:
         self._stop = asyncio.Event()
         self._scoring_task: Optional[asyncio.Task] = None
 
+        # Event-driven scoring: set of symbols needing re-score, woken by WS
+        self._score_one: set[str] = set()
+        self._score_wake: Optional[asyncio.Event] = None
+        self._last_emit_ts: Dict[str, float] = {}
+
     # ------------------------- lifecycle -------------------------
 
     async def start(self) -> None:
@@ -97,6 +102,8 @@ class Engine:
         # Auth ping (best-effort)
         if self.cfg.mexc_web.web_uid.strip():
             try:
+                # Preconnect warms TCP+TLS sockets so the first trade is fast.
+                await self.trader.api.preconnect()
                 res = await self.trader.api.auth_ping()
                 ok = bool(res.get("success"))
                 async with self.state.lock:
@@ -106,6 +113,10 @@ class Engine:
                 async with self.state.lock:
                     self.state.mexc_auth_ok = False
                     self.state.mexc_auth_msg = str(e)
+
+        # Keep MEXC HTTP connection warm with a periodic public ping so the
+        # pool never goes cold between trades (saves ~80ms cold handshake).
+        self._tasks.append(asyncio.create_task(self._http_keepalive_loop(), name="http_keepalive"))
 
         # Executor
         await self._configure_executor()
@@ -320,20 +331,42 @@ class Engine:
                 pass
             await asyncio.sleep(1.0)
 
+    async def _http_keepalive_loop(self) -> None:
+        """Periodically hit a cheap MEXC public endpoint so the TCP+TLS
+        pool stays warm. Without this, an idle socket is dropped after
+        ~60s and the next order pays for a fresh handshake (~80ms)."""
+        while not self._stop.is_set():
+            # Interval must be shorter than keepalive_timeout (120s).
+            await asyncio.sleep(45.0)
+            if self.trader is None:
+                continue
+            try:
+                await self.trader.api._request_market("api/v1/contract/ping")
+            except Exception:
+                pass
+
     # WS callbacks
     async def _on_binance_depth(self, sym: str, bids: list, asks: list, ts: float) -> None:
         self.aggregator.on_binance_depth(sym, bids, asks, ts)
+        # Event-driven scoring: trigger immediately on fresh Binance data
+        # for the specific symbol. This is ~100ms faster than polling with
+        # paper_tick_sec=0.2s because we don't wait for the next tick.
+        mexc_sym = self.aggregator.mexc_symbol_for_binance(sym)
+        if mexc_sym:
+            self._score_one.add(mexc_sym)
+            # Wake the scoring loop if it is asleep
+            if self._score_wake is not None and not self._score_wake.is_set():
+                self._score_wake.set()
 
     async def _on_binance_trade(self, sym: str, price: float, qty: float, buyer_is_maker: bool, ts: float) -> None:
         self.aggregator.on_binance_trade(sym, price, qty, buyer_is_maker, ts)
 
     async def _on_mexc_depth(self, sym: str, bids: list, asks: list, ts: float) -> None:
-        if not hasattr(self, '_mexc_depth_call_count'):
-            self._mexc_depth_call_count = 0
-        self._mexc_depth_call_count += 1
-        if self._mexc_depth_call_count <= 5:
-            logger.info(f"Engine._on_mexc_depth called: symbol={sym}, bids={len(bids)}, asks={len(asks)}")
         self.aggregator.on_mexc_depth(sym, bids, asks, ts)
+        # Fresh MEXC top-of-book also matters for lag/chase filters.
+        self._score_one.add(sym)
+        if self._score_wake is not None and not self._score_wake.is_set():
+            self._score_wake.set()
 
     def _override_for(self, symbol: str):
         """Return SymbolOverride for symbol, or None."""
@@ -343,28 +376,54 @@ class Engine:
         return None
 
     async def _scoring_loop(self) -> None:
-        """Periodic scoring of all symbols + opportunity emission."""
-        # rate-limit emissions per symbol
-        last_emit_ts: Dict[str, float] = {}
+        """Event-driven scoring: triggered on fresh WS data, not polling.
+
+        Score and emit signals within ~1-2ms of a Binance/MEXC depth update,
+        instead of waiting up to paper_tick_sec (200ms) for the next tick.
+        This was the single largest source of entry latency before.
+        """
+        if self._score_wake is None:
+            self._score_wake = asyncio.Event()
         cleanup_last = 0.0
-        logger.info("=== SCORING LOOP STARTED ===")
+        rank_last = 0.0
+        logger.info("=== SCORING LOOP STARTED (event-driven) ===")
+
         while not self._stop.is_set():
             try:
-                if not self.state.engine_running:
-                    await asyncio.sleep(0.3)
-                    continue
-                if self.state.kill_switch:
-                    # Risk-cap was tripped (daily loss / max DD / manual kill).
-                    # Stop emitting new signals; in-flight positions still
-                    # manage themselves through the executor's tick loop.
-                    await asyncio.sleep(0.5)
+                if not self.state.engine_running or self.state.kill_switch:
+                    # Drain any pending work quickly then sleep longer
+                    self._score_one.clear()
+                    self._score_wake.clear()
+                    await asyncio.sleep(0.2)
                     continue
 
-                # Score all symbols
-                stats_dict = {}
-                for sym in self.aggregator.symbols():
+                # Wait either for a WS-triggered score request, or a 100ms
+                # watchdog so that stats/UI keep updating even when no depth
+                # pushes arrive (rare but happens during flat periods).
+                try:
+                    await asyncio.wait_for(self._score_wake.wait(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    pass
+                self._score_wake.clear()
+
+                # Snapshot the symbols that need scoring and reset the bag
+                pending = list(self._score_one)
+                self._score_one.clear()
+
+                now = time.time()
+
+                # If we came from a watchdog with no pending symbols, do a
+                # light housekeeping pass: update candidate ranking once a
+                # second for the UI, then continue waiting.
+                if not pending:
+                    if now - rank_last > 1.0:
+                        rank_last = now
+                        await self._refresh_rank_snapshot()
+                    continue
+
+                # Score ONLY the symbols that changed. This is the hot path.
+                for sym in pending:
                     ov = self._override_for(sym)
-                    # Skip disabled symbols
                     if ov is not None and not ov.enabled:
                         continue
                     st = self.aggregator.compute_stats(sym)
@@ -372,72 +431,53 @@ class Engine:
                         self.opportunity.evaluate_multi(sym, st, ov)
                     else:
                         self.opportunity.evaluate(sym, st)
-                    stats_dict[sym] = st
-                    async with self.state.lock:
-                        self.state.stats[sym] = st
 
-                if not hasattr(self, '_scoring_loop_count'):
-                    self._scoring_loop_count = 0
-                self._scoring_loop_count += 1
-                if self._scoring_loop_count == 1:
-                    logger.info(f"First scoring iteration complete, processed {len(stats_dict)} symbols")
+                    # Publish stats for UI without holding the lock long
+                    self.state.stats[sym] = st
 
-                # Rank for UI
-                ranked = self.opportunity.rank(stats_dict)
-                async with self.state.lock:
-                    self.state.candidates = ranked
+                    # Fire a signal immediately if it qualifies
+                    if (
+                        st.side_hint
+                        and not st.blocked_reason
+                        and float(st.score or 0.0) > 0.0
+                    ):
+                        last = self._last_emit_ts.get(sym, 0.0)
+                        if now - last >= 0.5:
+                            opp = self.opportunity.make_opportunity(sym, st)
+                            if opp is not None:
+                                self._last_emit_ts[sym] = now
+                                if self.executor is None:
+                                    try:
+                                        await self.store.insert_candidate(
+                                            now, sym, opp.side, opp.score, opp.z, st.spread_bps,
+                                            st.fair, st.mexc_mid, st.mexc_book_top10_notional,
+                                            None, accepted=True,
+                                        )
+                                    except Exception:
+                                        pass
+                                    await self.state.add_log(
+                                        "info",
+                                        f"[logger] {sym} {opp.side} score={opp.score:.2f} z={opp.z:.2f}",
+                                    )
+                                else:
+                                    try:
+                                        await self.executor.on_signal(opp)
+                                    except Exception as e:
+                                        logger.warning("executor.on_signal error: %s", e)
+                                    # Persist off hot path
+                                    try:
+                                        await self.store.insert_candidate(
+                                            now, sym, opp.side, opp.score, opp.z, st.spread_bps,
+                                            st.fair, st.mexc_mid, st.mexc_book_top10_notional,
+                                            None, accepted=True,
+                                        )
+                                    except Exception:
+                                        pass
 
-                # Emit signals (top candidates only) — once per N seconds per symbol
-                now = time.time()
-                emitted = 0
-                for c in ranked:
-                    if not c.get("side") or c.get("blocked") or float(c.get("score") or 0) <= 0:
-                        continue
-                    sym = c["symbol"]
-                    last = last_emit_ts.get(sym, 0.0)
-                    if now - last < 0.5:
-                        continue
-                    st = stats_dict.get(sym)
-                    if not st:
-                        continue
-                    opp = self.opportunity.make_opportunity(sym, st)
-                    if not opp:
-                        continue
-                    last_emit_ts[sym] = now
-
-                    if self.executor is None:
-                        try:
-                            await self.store.insert_candidate(
-                                now, sym, opp.side, opp.score, opp.z, st.spread_bps,
-                                st.fair, st.mexc_mid, st.mexc_book_top10_notional,
-                                None, accepted=True,
-                            )
-                        except Exception:
-                            pass
-                        # logger mode: just log
-                        await self.state.add_log(
-                            "info",
-                            f"[logger] {sym} {opp.side} score={opp.score:.2f} z={opp.z:.2f}",
-                        )
-                        continue
-
-                    try:
-                        await self.executor.on_signal(opp)
-                    except Exception as e:
-                        logger.warning("executor.on_signal error: %s", e)
-                    # Persist accepted candidates after the executor has seen the
-                    # signal so analytics do not sit on the trade-critical path.
-                    try:
-                        await self.store.insert_candidate(
-                            now, sym, opp.side, opp.score, opp.z, st.spread_bps,
-                            st.fair, st.mexc_mid, st.mexc_book_top10_notional,
-                            None, accepted=True,
-                        )
-                    except Exception:
-                        pass
-                    emitted += 1
-                    if emitted >= 10:
-                        break
+                # Refresh UI ranking at most 1Hz
+                if now - rank_last > 1.0:
+                    rank_last = now
+                    await self._refresh_rank_snapshot()
 
                 # Periodic cleanup
                 if now - cleanup_last > 5.0:
@@ -446,5 +486,18 @@ class Engine:
 
             except Exception as e:
                 logger.exception("scoring loop error: %s", e)
+                await asyncio.sleep(0.05)
 
-            await asyncio.sleep(max(0.05, float(getattr(self.cfg.strategy, "paper_tick_sec", 0.2) or 0.2)))
+    async def _refresh_rank_snapshot(self) -> None:
+        """Rebuild the full candidate ranking for the UI. Called at ~1Hz,
+        off the trade-critical path."""
+        stats_dict: Dict[str, Any] = {}
+        for sym in self.aggregator.symbols():
+            st = self.state.stats.get(sym)
+            if st is None:
+                st = self.aggregator.compute_stats(sym)
+                self.state.stats[sym] = st
+            stats_dict[sym] = st
+        ranked = self.opportunity.rank(stats_dict)
+        self.state.candidates = ranked
+
