@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
+import traceback
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +21,17 @@ from .state import AppState
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+
+# Global exception handler for asyncio
+def handle_exception(loop, context):
+    msg = context.get("exception", context["message"])
+    logger.error(f"Caught asyncio exception: {msg}")
+    logger.error(f"Context: {context}")
+    if "exception" in context:
+        exc = context["exception"]
+        logger.error("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +48,12 @@ _exchange_trade_cache: Dict[str, Any] = {"ts": 0.0, "symbols": tuple(), "items":
 async def lifespan(app: FastAPI):
     # Startup
     print("=== LIFESPAN STARTUP ===", flush=True)
+
+    # Set global exception handler for asyncio
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(handle_exception)
+    logger.info("Asyncio exception handler installed")
+
     try:
         await engine.start()
         print("=== ENGINE.START() COMPLETE ===", flush=True)

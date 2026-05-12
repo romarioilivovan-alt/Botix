@@ -107,6 +107,7 @@ class MexcMultiWS:
         logger.info("MexcMultiWS entering main loop")
         while not self._stop.is_set():
             try:
+                logger.info(f"MexcMultiWS connecting to {MEXC_WS_ENDPOINT}...")
                 async with websockets.connect(
                     MEXC_WS_ENDPOINT,
                     ping_interval=20,
@@ -114,14 +115,17 @@ class MexcMultiWS:
                     max_size=4_000_000,
                     compression=None,
                 ) as ws:
+                    logger.info("MexcMultiWS connected successfully")
                     self._ws = ws
                     self._connected = True
                     self._subscribed.clear()
                     self._last_msg_ts = time.time()
                     backoff = 1.0
                     # subscribe to all desired
+                    logger.info(f"MexcMultiWS subscribing to {len(self._desired)} symbols")
                     for sym in list(self._desired):
                         await self._sub(sym)
+                    logger.info("MexcMultiWS subscriptions complete, entering message loop")
 
                     async for raw in ws:
                         self._last_msg_ts = time.time()
@@ -141,6 +145,7 @@ class MexcMultiWS:
                             except Exception as e:
                                 logger.warning("mexc on_depth %s error: %s", sym, e)
             except Exception as e:
+                logger.error(f"MEXC WS error: {e}", exc_info=True)
                 logger.info("MEXC WS reconnect: %s", e)
             finally:
                 self._connected = False

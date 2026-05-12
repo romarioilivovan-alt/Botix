@@ -128,9 +128,11 @@ class BinanceMultiWS:
                     # No symbols yet — open empty wrapper to enable later SUBSCRIBE
                     url = f"{BINANCE_FUTURES_WS_BASE}?streams=btcusdt@trade"
 
+                logger.info(f"BinanceMultiWS connecting to {url[:100]}...")
                 async with websockets.connect(
                     url, ping_interval=15, ping_timeout=15, max_size=4_000_000
                 ) as ws:
+                    logger.info("BinanceMultiWS connected successfully")
                     self._ws = ws
                     self._connected = True
                     self._last_msg_ts = time.time()
@@ -140,6 +142,7 @@ class BinanceMultiWS:
                             set(rest_to_symbols(rest)), subscribe=True
                         )
 
+                    logger.info("BinanceMultiWS entering message loop")
                     async for raw in ws:
                         self._last_msg_ts = time.time()
                         if self._stop.is_set():
@@ -151,6 +154,7 @@ class BinanceMultiWS:
                         await self._handle(msg)
 
             except Exception as e:
+                logger.error(f"Binance WS error: {e}", exc_info=True)
                 logger.info("Binance WS reconnect: %s", e)
             finally:
                 self._connected = False
