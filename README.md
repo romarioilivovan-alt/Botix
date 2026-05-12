@@ -79,6 +79,12 @@ Risk caps:
 
 ## Setup
 
+**Security Note (Fix #0):**
+- `config.json` is gitignored and contains your MEXC web session credentials
+- Copy `config.example.json` to `config.json` and fill in your `web_uid`, `device_id`, and `mhash`
+- Never commit `config.json` to git
+- The bot uses MEXC web session authentication (not OpenAPI) for speed and to preserve 0-fee status
+
 ```powershell
 cd metascalp_web_terminal
 py -3.11 -m venv .venv
@@ -86,10 +92,43 @@ py -3.11 -m venv .venv
 pip install -r requirements.txt
 
 copy config.example.json config.json
+# Edit config.json with your MEXC credentials
 python -m uvicorn backend.app:app --host 127.0.0.1 --port 8080
 ```
 
 Open http://127.0.0.1:8080 .
+
+---
+
+## Recent Changes (Edge & Latency Pack 1)
+
+**Performance & Latency Improvements:**
+- **Fix #2 (Bug B+C):** Entry latency reduced to 0ms, loop split into fast (50ms) and slow (1s) paths
+- **Fix #4 (Bug E):** Eliminated redundant `compute_stats` calls by reusing SymbolStats
+- **Fix #5 (Bug F+G):** Implemented Welford algorithm for O(1) σ computation, added 50ms compute_stats cache, removed unnecessary sorts
+
+**Reliability & Edge Quality:**
+- **Fix #1 (Bug A):** Fixed stock symbols without Binance reference contaminating spread statistics
+- **Fix #3 (Bug D):** Prioritized `query_order` API over positions list for accurate fill detection
+- **Fix #6 (Bug H+I):** Added WebSocket watchdog (10s stall detection) and independent MEXC heartbeat task
+- **Fix #7 (Bug J+K):** Enabled stricter raw_momentum filters: 5s trend agreement, 1.5bps min lag, 3.0bps max chase
+
+**Configuration Changes:**
+- `entry_latency_ms`: 200 → 0
+- `signal_max_age_ms`: 700 → 400
+- `fast_tick_sec`: 0.05 (new, hot path)
+- `slow_tick_sec`: 1.0 (new, cold path)
+- `raw_momentum_require_5s_agree`: false → true
+- `raw_momentum_require_lag`: false → true
+- `raw_momentum_min_lag_bps`: 0.0 → 1.5
+- `raw_momentum_max_chase_bps`: 0.0 → 3.0
+
+**What to Expect:**
+- Lower latency on entry execution (0ms artificial delay)
+- Reduced CPU usage from O(1) statistics and caching
+- Fewer false signals from stricter momentum filters
+- Better fill detection accuracy
+- Automatic recovery from silent WebSocket failures
 
 ---
 

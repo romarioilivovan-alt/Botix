@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
+import traceback
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List
@@ -18,13 +21,22 @@ from .state import AppState
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+
+# Global exception handler for asyncio
+def handle_exception(loop, context):
+    msg = context.get("exception", context["message"])
+    logger.error(f"Caught asyncio exception: {msg}")
+    logger.error(f"Context: {context}")
+    if "exception" in context:
+        exc = context["exception"]
+        logger.error("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
 
-
-app = FastAPI(title="0fee Scanner Bot", version="0.2")
 
 cfg = load_config()
 state = AppState()
@@ -32,15 +44,33 @@ engine = Engine(cfg, state)
 _exchange_trade_cache: Dict[str, Any] = {"ts": 0.0, "symbols": tuple(), "items": []}
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
-    await engine.start()
-    asyncio.create_task(_ws_push_loop(), name="ws_push")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("=== LIFESPAN STARTUP ===", flush=True)
 
+    # Set global exception handler for asyncio
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(handle_exception)
+    logger.info("Asyncio exception handler installed")
 
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
+    try:
+        await engine.start()
+        print("=== ENGINE.START() COMPLETE ===", flush=True)
+        asyncio.create_task(_ws_push_loop(), name="ws_push")
+        print("=== LIFESPAN STARTUP COMPLETE ===", flush=True)
+    except Exception as e:
+        print(f"=== LIFESPAN STARTUP ERROR: {e} ===", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
+    yield
+    # Shutdown
+    print("=== LIFESPAN SHUTDOWN ===", flush=True)
     await engine.shutdown()
+
+
+app = FastAPI(title="0fee Scanner Bot", version="0.2", lifespan=lifespan)
 
 
 @app.get("/")

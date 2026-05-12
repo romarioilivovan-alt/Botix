@@ -120,6 +120,16 @@ class RealExecutor:
             self.state.day_start_ts = time.time()
             self.state.day_start_balance = equity
 
+        # Warn if taker_entry=True and entry_latency_ms>0
+        taker_entry = bool(getattr(self.cfg.strategy, "taker_entry", False))
+        entry_latency_ms = int(getattr(self.cfg.strategy, "entry_latency_ms", 200) or 200)
+        if taker_entry and entry_latency_ms > 0:
+            logger.warning(
+                "taker_entry=True with entry_latency_ms=%d; forcing entry_latency_ms=0 for immediate execution",
+                entry_latency_ms
+            )
+            self.cfg.strategy.entry_latency_ms = 0
+
     async def _fetch_account_balances(self) -> tuple[float, float]:
         try:
             snap = await self.trader.get_usdt_balance_snapshot()
@@ -419,29 +429,42 @@ class RealExecutor:
         *,
         signal_ts: float = 0.0,
         spread_bps_at_quote: Optional[float] = None,
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, Optional[Any]]:
         st = self.agg.compute_stats(symbol)
         ov = self._override_for(symbol)
         if ov is not None and ov.algorithms:
             self.opp.evaluate_multi(symbol, st, ov)
         else:
             self.opp.evaluate(symbol, st)
+
+        # Calculate age_ms for logging
+        age_ms = None
+        if signal_ts > 0:
+            age_ms = (time.time() - signal_ts) * 1000.0
+
         strict_filters = signal_ts <= 0 and spread_bps_at_quote is None
         if strict_filters:
             if st.blocked_reason:
-                return False, st.blocked_reason
+                self._log_signal_decision(symbol, side, st, "rejected", st.blocked_reason, age_ms)
+                return False, st.blocked_reason, st
             if not st.side_hint:
-                return False, "no_side_hint"
+                self._log_signal_decision(symbol, side, st, "rejected", "no_side_hint", age_ms)
+                return False, "no_side_hint", st
             if st.side_hint != side:
-                return False, f"side_flip={st.side_hint}"
+                reason = f"side_flip={st.side_hint}"
+                self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                return False, reason, st
             min_entry_score = self._min_entry_score_for(symbol)
             if st.score < min_entry_score:
-                return False, f"score {st.score:.2f} < {min_entry_score:.2f}"
+                reason = f"score {st.score:.2f} < {min_entry_score:.2f}"
+                self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                return False, reason, st
         elif st.side_hint and st.side_hint != side:
-            return False, f"side_flip={st.side_hint}"
+            reason = f"side_flip={st.side_hint}"
+            self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+            return False, reason, st
         max_age_ms = self._signal_max_age_ms_for(symbol)
         if max_age_ms > 0 and signal_ts > 0:
-            age_ms = (time.time() - signal_ts) * 1000.0
             age_limit_ms = float(max_age_ms)
             if age_ms > age_limit_ms:
                 grace_ms = self._signal_age_grace_ms_for(symbol)
@@ -449,7 +472,9 @@ class RealExecutor:
                     age_ms <= age_limit_ms + grace_ms
                     and self._fresh_books_for_age_grace(st)
                 ):
-                    return False, f"signal_age={age_ms:.0f}ms"
+                    reason = f"signal_age={age_ms:.0f}ms"
+                    self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                    return False, reason, st
         max_spread_drift = self._pre_submit_max_spread_drift_bps_for(symbol)
         if max_spread_drift > 0 and spread_bps_at_quote is not None and st.spread_bps is not None:
             if side == "LONG":
@@ -457,8 +482,70 @@ class RealExecutor:
             else:
                 spread_drift = spread_bps_at_quote - st.spread_bps
             if spread_drift > max_spread_drift:
-                return False, f"spread_drift={spread_drift:.2f}bps"
-        return True, ""
+                reason = f"spread_drift={spread_drift:.2f}bps"
+                self._log_signal_decision(symbol, side, st, "rejected", reason, age_ms)
+                return False, reason, st
+
+        # Signal accepted
+        self._log_signal_decision(symbol, side, st, "accepted", None, age_ms)
+        return True, "", st
+
+    def _log_signal_decision(
+        self,
+        symbol: str,
+        side: str,
+        st: Any,
+        decision: str,
+        reason: Optional[str],
+        age_ms: Optional[float],
+    ) -> None:
+        """Log signal decision to persistence for observability."""
+        try:
+            import asyncio
+            asyncio.create_task(
+                self.state.store.log_signal_decision(
+                    symbol=symbol,
+                    decision=decision,
+                    side=side,
+                    strategy=getattr(st, "selected_algorithm", None),
+                    z_score=getattr(st, "z_score", None),
+                    spread_bps=getattr(st, "spread_bps", None),
+                    fair=getattr(st, "fair", None),
+                    mexc_mid=getattr(st, "mexc_mid", None),
+                    reason=reason,
+                    age_ms=age_ms,
+                )
+            )
+        except Exception:
+            pass
+
+    def _log_latency_probe(
+        self,
+        symbol: str,
+        *,
+        binance_depth_age_ms: Optional[float] = None,
+        mexc_depth_age_ms: Optional[float] = None,
+        stats_compute_ms: Optional[float] = None,
+        decision_ms: Optional[float] = None,
+        submit_latency_ms: Optional[float] = None,
+        fill_latency_ms: Optional[float] = None,
+    ) -> None:
+        """Log latency measurements to persistence for performance analysis."""
+        try:
+            import asyncio
+            asyncio.create_task(
+                self.state.store.log_latency_probe(
+                    symbol=symbol,
+                    binance_depth_age_ms=binance_depth_age_ms,
+                    mexc_depth_age_ms=mexc_depth_age_ms,
+                    stats_compute_ms=stats_compute_ms,
+                    decision_ms=decision_ms,
+                    submit_latency_ms=submit_latency_ms,
+                    fill_latency_ms=fill_latency_ms,
+                )
+            )
+        except Exception:
+            pass
 
     def _fill_respects_fair(
         self,
@@ -480,13 +567,41 @@ class RealExecutor:
 
     async def loop(self) -> None:
         await self.init_balance()
-        tick_sec = self._loop_tick_sec()
+        self._stop = asyncio.Event()
+        fast = asyncio.create_task(self._fast_loop(), name="real_fast_loop")
+        slow = asyncio.create_task(self._slow_loop(), name="real_slow_loop")
+        try:
+            await self._stop.wait()
+        finally:
+            for t in (fast, slow):
+                t.cancel()
+            await asyncio.gather(fast, slow, return_exceptions=True)
+
+    async def _fast_loop(self) -> None:
+        """Hot path: SL/TP management, quote reconcile, kill switch. ~50ms."""
+        interval = float(self.cfg.strategy.fast_tick_sec if hasattr(self.cfg.strategy, 'fast_tick_sec') else 0.05)
+        while not self._stop.is_set():
+            t0 = time.perf_counter()
+            try:
+                await self._reconcile_quotes()
+                await self._reconcile_positions()
+                await self._check_kill_switch()
+            except Exception:
+                logger.exception("fast_loop tick error")
+            elapsed = time.perf_counter() - t0
+            sleep_for = max(0.0, interval - elapsed)
+            await asyncio.sleep(sleep_for)
+
+    async def _slow_loop(self) -> None:
+        """Cold path: balance refresh, equity logging, housekeeping. ~1s."""
+        interval = float(self.cfg.strategy.slow_tick_sec if hasattr(self.cfg.strategy, 'slow_tick_sec') else 1.0)
         while not self._stop.is_set():
             try:
-                await self._tick()
-            except Exception as e:
-                logger.exception("real tick error: %s", e)
-            await asyncio.sleep(tick_sec)
+                await self._refresh_balance_periodically()
+                await self._log_equity_periodically()
+            except Exception:
+                logger.exception("slow_loop tick error")
+            await asyncio.sleep(interval)
 
     async def on_signal(self, opp: Opportunity) -> None:
         async with self._lock:
@@ -495,6 +610,7 @@ class RealExecutor:
     # ----------------------------- internals -----------------------------
 
     async def _tick(self) -> None:
+        # Deprecated - now split into _fast_loop and _slow_loop
         await self._refresh_balance_periodically()
         await self._reconcile_quotes()
         await self._reconcile_positions()
@@ -547,9 +663,18 @@ class RealExecutor:
         if sym in self.state.positions:
             return
 
+        # Latency probe: measure book ages and decision time
+        t_decision_start = time.perf_counter()
+
         book = self.agg.get_book(sym)
         if not book or book.best_bid is None or book.best_ask is None:
             return
+
+        # Measure book ages
+        now = time.time()
+        mexc_depth_age_ms = (now - book.ts) * 1000.0 if book.ts > 0 else None
+        binance_book = self.agg.get_binance_book(sym)
+        binance_depth_age_ms = (now - binance_book.ts) * 1000.0 if binance_book and binance_book.ts > 0 else None
 
         # Optional 0-fee live check (the symbol can lose its zero-fee status).
         require_zero_fee = bool(getattr(self.cfg.strategy, "real_require_zero_fee", False))
@@ -559,7 +684,6 @@ class RealExecutor:
             except Exception:
                 zero = False
             if not zero:
-                now = time.time()
                 last = float(self._zero_fee_skip_log_ts.get(sym, 0.0) or 0.0)
                 if now - last >= 30.0:
                     self._zero_fee_skip_log_ts[sym] = now
@@ -674,6 +798,18 @@ class RealExecutor:
             spread_bps_at_quote=spread_bps_at_quote,
         )
         self._quotes[sym] = q
+
+        # Latency probe: log decision time and submit latency
+        decision_ms = (time.perf_counter() - t_decision_start) * 1000.0
+        submit_latency_ms = (time.time() - opp.signal_ts) * 1000.0 if opp.signal_ts > 0 else None
+        self._log_latency_probe(
+            sym,
+            binance_depth_age_ms=binance_depth_age_ms,
+            mexc_depth_age_ms=mexc_depth_age_ms,
+            decision_ms=decision_ms,
+            submit_latency_ms=submit_latency_ms,
+        )
+
         await self.state.add_log(
             "info",
             f"[real] {'ioc' if taker_entry else 'quote'} {sym} {opp.side} @ {price:.6g} "
@@ -689,7 +825,7 @@ class RealExecutor:
                     continue
                 if now < q.taker_submit_at:
                     continue
-                ok_signal, why_signal = self._signal_valid_now(
+                ok_signal, why_signal, agg_stats = self._signal_valid_now(
                     sym,
                     q.side,
                     signal_ts=q.signal_ts,
@@ -710,8 +846,7 @@ class RealExecutor:
                     raw_price *= (1.0 - buf_bps / 1e4)
                 tick = await self._tick_size(sym)
                 price, _ = _snap_price(float(raw_price), tick, q.side, for_sl=False)
-                agg_stats = self.agg.compute_stats(sym)
-                fair = float(agg_stats.fair or 0.0)
+                fair = float(agg_stats.fair or 0.0) if agg_stats else 0.0
                 ok_fill, why_fill = self._fill_respects_fair(
                     sym, q.side, q.entry_algo, price, fair
                 )
@@ -781,7 +916,7 @@ class RealExecutor:
                 await self._cancel_quote(q, reason="timeout")
                 continue
 
-            ok_signal, why_signal = self._signal_valid_now(
+            ok_signal, why_signal, agg_stats_recheck = self._signal_valid_now(
                 sym,
                 q.side,
                 signal_ts=q.signal_ts,
@@ -794,10 +929,12 @@ class RealExecutor:
             # Detect fill: query order state OR check positions
             filled = await self._is_quote_filled(q)
             if filled:
+                # Use the recheck stats if available, otherwise fall back to earlier compute
+                stats_for_fill = agg_stats_recheck if agg_stats_recheck else agg_stats
                 materialized = await self._materialize_filled_quote(
                     q,
-                    fair=agg_stats.fair,
-                    sigma=agg_stats.sigma_spread,
+                    fair=stats_for_fill.fair,
+                    sigma=stats_for_fill.sigma_spread,
                     retry_delays=(0.0, 0.3),
                 )
                 if not materialized:
@@ -805,20 +942,7 @@ class RealExecutor:
                 continue
 
     async def _is_quote_filled(self, q: _Quote) -> bool:
-        # 1) Check positions (cheap)
-        try:
-            raw = await self._get_positions_raw_cached()
-            for p in raw:
-                if str(p.get("symbol") or "").upper() != q.symbol:
-                    continue
-                pt = int(p.get("positionType") or 0)
-                want = 1 if q.side == "LONG" else 2
-                if pt == want and float(p.get("holdVol") or 0) > 0:
-                    return True
-        except Exception as e:
-            logger.warning("quote fill check by positions failed for %s: %s", q.symbol, e)
-
-        # 2) Query order state (if we have id)
+        # 1) Query order state first (if we have id) - more accurate than positions
         if q.order_id:
             try:
                 res = await self.trader.query_order(int(q.order_id))
@@ -836,6 +960,20 @@ class RealExecutor:
                         return False
             except Exception:
                 pass
+
+        # 2) Fallback: check positions (with TTL=0.5s cache)
+        try:
+            raw = await self._get_positions_raw_cached(max_age_sec=0.5)
+            for p in raw:
+                if str(p.get("symbol") or "").upper() != q.symbol:
+                    continue
+                pt = int(p.get("positionType") or 0)
+                want = 1 if q.side == "LONG" else 2
+                if pt == want and float(p.get("holdVol") or 0) > 0:
+                    return True
+        except Exception as e:
+            logger.warning("quote fill check by positions failed for %s: %s", q.symbol, e)
+
         return False
 
     async def _find_position(self, symbol: str, side: str) -> Optional[Dict[str, Any]]:
@@ -1479,6 +1617,25 @@ class RealExecutor:
                 pos.best_realized_bps = move_bps_now
             residual_edge_bps = _residual_edge_bps(pos, current_fair, exit_price_now)
             age_sec = now - pos.open_ts
+
+            # Fair-cross exit with hysteresis: close when price returns to fair
+            # with a small neutral band to avoid noise.
+            exit_neutral_band_bps = float(getattr(self.cfg.strategy, "exit_neutral_band_bps", 0.5))
+            min_hold_sec = float(getattr(self.cfg.strategy, "min_hold_sec", 3.0))
+            if current_fair is not None and current_fair > 0 and pos.entry_price > 0:
+                cur_dev_bps = (mid - current_fair) / current_fair * 1e4
+                # LONG was opened when MEXC < fair (negative dev), wait for return to ~0
+                if pos.side == "LONG" and cur_dev_bps >= -exit_neutral_band_bps:
+                    if age_sec >= min_hold_sec:
+                        pos.exit_signal_ts = now
+                        await self._close_market(pos, raw, reason="fair_cross")
+                        continue
+                # SHORT was opened when MEXC > fair (positive dev), wait for return to ~0
+                if pos.side == "SHORT" and cur_dev_bps <= exit_neutral_band_bps:
+                    if age_sec >= min_hold_sec:
+                        pos.exit_signal_ts = now
+                        await self._close_market(pos, raw, reason="fair_cross")
+                        continue
 
             # Fair-value TP: mean-reversion trades should realize the reversion
             # instead of waiting for the time backstop.

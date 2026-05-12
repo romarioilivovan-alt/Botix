@@ -64,8 +64,13 @@ class Engine:
         self.state.kill_switch = False
 
         # Compute first universe set up-front so we have something to subscribe to.
+        logger.info("=== Calling universe.refresh() ===")
         await self.universe.refresh()
-        await self._configure_universe(self.universe.working_set)
+        ws = self.universe.working_set
+        logger.info(f"=== universe.working_set = {ws} ({len(ws)} symbols) ===")
+        await self._configure_universe(ws)
+        logger.info(f"=== aggregator.symbols() = {self.aggregator.symbols()} ===")
+
 
         # WS clients
         self.binance_ws = BinanceMultiWS(
@@ -74,12 +79,20 @@ class Engine:
         )
         self.mexc_ws = MexcMultiWS(on_depth=self._on_mexc_depth)
 
-        # Tasks
+        # Tasks with exception handling
+        async def safe_task(coro, name: str):
+            try:
+                await coro
+            except Exception as e:
+                logger.exception(f"Task {name} failed: {e}")
+
         binance_initial = [self.universe.reference_for(s) for s in self.universe.working_set if self.universe.reference_for(s)]
-        self._tasks.append(asyncio.create_task(self.binance_ws.run(binance_initial), name="binance_ws"))
-        self._tasks.append(asyncio.create_task(self.mexc_ws.run(self.universe.working_set), name="mexc_ws"))
-        self._tasks.append(asyncio.create_task(self.universe.loop(self._on_universe_change), name="universe"))
-        self._tasks.append(asyncio.create_task(self._connectivity_watcher(), name="conn_watch"))
+        logger.info(f"Starting binance_ws with {len(binance_initial)} symbols: {binance_initial}")
+        self._tasks.append(asyncio.create_task(safe_task(self.binance_ws.run(binance_initial), "binance_ws"), name="binance_ws"))
+        logger.info(f"Starting mexc_ws with {len(self.universe.working_set)} symbols: {self.universe.working_set}")
+        self._tasks.append(asyncio.create_task(safe_task(self.mexc_ws.run(self.universe.working_set), "mexc_ws"), name="mexc_ws"))
+        self._tasks.append(asyncio.create_task(safe_task(self.universe.loop(self._on_universe_change), "universe"), name="universe"))
+        self._tasks.append(asyncio.create_task(safe_task(self._connectivity_watcher(), "conn_watch"), name="conn_watch"))
 
         # Auth ping (best-effort)
         if self.cfg.mexc_web.web_uid.strip():
@@ -315,6 +328,11 @@ class Engine:
         self.aggregator.on_binance_trade(sym, price, qty, buyer_is_maker, ts)
 
     async def _on_mexc_depth(self, sym: str, bids: list, asks: list, ts: float) -> None:
+        if not hasattr(self, '_mexc_depth_call_count'):
+            self._mexc_depth_call_count = 0
+        self._mexc_depth_call_count += 1
+        if self._mexc_depth_call_count <= 5:
+            logger.info(f"Engine._on_mexc_depth called: symbol={sym}, bids={len(bids)}, asks={len(asks)}")
         self.aggregator.on_mexc_depth(sym, bids, asks, ts)
 
     def _override_for(self, symbol: str):
@@ -329,6 +347,7 @@ class Engine:
         # rate-limit emissions per symbol
         last_emit_ts: Dict[str, float] = {}
         cleanup_last = 0.0
+        logger.info("=== SCORING LOOP STARTED ===")
         while not self._stop.is_set():
             try:
                 if not self.state.engine_running:
@@ -356,6 +375,12 @@ class Engine:
                     stats_dict[sym] = st
                     async with self.state.lock:
                         self.state.stats[sym] = st
+
+                if not hasattr(self, '_scoring_loop_count'):
+                    self._scoring_loop_count = 0
+                self._scoring_loop_count += 1
+                if self._scoring_loop_count == 1:
+                    logger.info(f"First scoring iteration complete, processed {len(stats_dict)} symbols")
 
                 # Rank for UI
                 ranked = self.opportunity.rank(stats_dict)

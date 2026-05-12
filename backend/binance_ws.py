@@ -48,6 +48,8 @@ class BinanceMultiWS:
         self._reqid = 0
         self._connected = False
         self._task: Optional[asyncio.Task] = None
+        self._last_msg_ts: float = 0.0
+        self._watchdog_task: Optional[asyncio.Task] = None
 
     @property
     def is_connected(self) -> bool:
@@ -96,10 +98,17 @@ class BinanceMultiWS:
                 logger.warning("Binance %s send failed: %s", method, e)
 
     async def run(self, initial: Iterable[str]) -> None:
+        logger.info(f"BinanceMultiWS.run() started with {len(list(initial))} symbols")
         self._desired = set(s.upper() for s in initial)
         self._stop.clear()
+        logger.info(f"BinanceMultiWS desired symbols: {self._desired}")
+
+        # Start watchdog task
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._stall_watchdog())
 
         backoff = 1.0
+        logger.info("BinanceMultiWS entering main loop")
         while not self._stop.is_set():
             try:
                 # Build the URL with the initial subset baked in (avoids race on first subscribe).
@@ -119,18 +128,23 @@ class BinanceMultiWS:
                     # No symbols yet — open empty wrapper to enable later SUBSCRIBE
                     url = f"{BINANCE_FUTURES_WS_BASE}?streams=btcusdt@trade"
 
+                logger.info(f"BinanceMultiWS connecting to {url[:100]}...")
                 async with websockets.connect(
                     url, ping_interval=15, ping_timeout=15, max_size=4_000_000
                 ) as ws:
+                    logger.info("BinanceMultiWS connected successfully")
                     self._ws = ws
                     self._connected = True
+                    self._last_msg_ts = time.time()
                     backoff = 1.0
                     if rest:
                         await self._send_subscribe(
                             set(rest_to_symbols(rest)), subscribe=True
                         )
 
+                    logger.info("BinanceMultiWS entering message loop")
                     async for raw in ws:
+                        self._last_msg_ts = time.time()
                         if self._stop.is_set():
                             break
                         try:
@@ -140,6 +154,7 @@ class BinanceMultiWS:
                         await self._handle(msg)
 
             except Exception as e:
+                logger.error(f"Binance WS error: {e}", exc_info=True)
                 logger.info("Binance WS reconnect: %s", e)
             finally:
                 self._connected = False
@@ -186,6 +201,19 @@ class BinanceMultiWS:
                 await self.on_trade(sym_u, price, qty, buyer_is_maker, ts)
             except Exception as e:
                 logger.warning("on_trade %s error: %s", sym_u, e)
+
+    async def _stall_watchdog(self) -> None:
+        """Monitor for stalled connection and force reconnect if no messages for 10s."""
+        while not self._stop.is_set():
+            await asyncio.sleep(5.0)
+            if self._ws is not None and self._last_msg_ts > 0:
+                silence = time.time() - self._last_msg_ts
+                if silence > 10.0:
+                    logger.warning("Binance WS stalled (%.1fs no msg), forcing reconnect", silence)
+                    try:
+                        await self._ws.close()
+                    except Exception:
+                        pass
 
 
 def rest_to_symbols(streams: List[str]) -> List[str]:

@@ -579,11 +579,6 @@ class MexcTrader:
         if self.kill_switch:
             await self._emergency_close_all_positions()
         return result
-            take_profit_price=take_profit_price,
-            stop_loss_price=stop_loss_price,
-            profit_trend=profit_trend,
-            loss_trend=loss_trend,
-        )
 
     async def change_stop_plan_price(
         self,
