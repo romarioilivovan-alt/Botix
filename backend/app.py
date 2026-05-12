@@ -35,9 +35,16 @@ _exchange_trade_cache: Dict[str, Any] = {"ts": 0.0, "symbols": tuple(), "items":
 async def lifespan(app: FastAPI):
     # Startup
     print("=== LIFESPAN STARTUP ===", flush=True)
-    await engine.start()
-    asyncio.create_task(_ws_push_loop(), name="ws_push")
-    print("=== LIFESPAN STARTUP COMPLETE ===", flush=True)
+    try:
+        await engine.start()
+        print("=== ENGINE.START() COMPLETE ===", flush=True)
+        asyncio.create_task(_ws_push_loop(), name="ws_push")
+        print("=== LIFESPAN STARTUP COMPLETE ===", flush=True)
+    except Exception as e:
+        print(f"=== LIFESPAN STARTUP ERROR: {e} ===", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
     yield
     # Shutdown
     print("=== LIFESPAN SHUTDOWN ===", flush=True)
