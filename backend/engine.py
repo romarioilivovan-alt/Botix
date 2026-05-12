@@ -328,6 +328,11 @@ class Engine:
         self.aggregator.on_binance_trade(sym, price, qty, buyer_is_maker, ts)
 
     async def _on_mexc_depth(self, sym: str, bids: list, asks: list, ts: float) -> None:
+        if not hasattr(self, '_mexc_depth_call_count'):
+            self._mexc_depth_call_count = 0
+        self._mexc_depth_call_count += 1
+        if self._mexc_depth_call_count <= 5:
+            logger.info(f"Engine._on_mexc_depth called: symbol={sym}, bids={len(bids)}, asks={len(asks)}")
         self.aggregator.on_mexc_depth(sym, bids, asks, ts)
 
     def _override_for(self, symbol: str):
@@ -342,6 +347,7 @@ class Engine:
         # rate-limit emissions per symbol
         last_emit_ts: Dict[str, float] = {}
         cleanup_last = 0.0
+        logger.info("=== SCORING LOOP STARTED ===")
         while not self._stop.is_set():
             try:
                 if not self.state.engine_running:
@@ -369,6 +375,12 @@ class Engine:
                     stats_dict[sym] = st
                     async with self.state.lock:
                         self.state.stats[sym] = st
+
+                if not hasattr(self, '_scoring_loop_count'):
+                    self._scoring_loop_count = 0
+                self._scoring_loop_count += 1
+                if self._scoring_loop_count == 1:
+                    logger.info(f"First scoring iteration complete, processed {len(stats_dict)} symbols")
 
                 # Rank for UI
                 ranked = self.opportunity.rank(stats_dict)

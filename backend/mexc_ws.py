@@ -127,6 +127,7 @@ class MexcMultiWS:
                         await self._sub(sym)
                     logger.info("MexcMultiWS subscriptions complete, entering message loop")
 
+                    msg_count = 0
                     async for raw in ws:
                         self._last_msg_ts = time.time()
                         if self._stop.is_set():
@@ -135,11 +136,20 @@ class MexcMultiWS:
                             msg = json.loads(raw)
                         except Exception:
                             continue
+
+                        msg_count += 1
+
+                        # Log ALL messages for debugging
+                        if msg_count <= 50:
+                            logger.info(f"MEXC message #{msg_count}: channel={msg.get('channel')}, symbol={msg.get('symbol')}")
+
                         if msg.get("channel") in {"push.depth", "push.depth.full"}:
                             payload = msg.get("data") or {}
                             sym = msg.get("symbol") or payload.get("symbol")
                             bids = payload.get("bids") or payload.get("b") or []
                             asks = payload.get("asks") or payload.get("a") or []
+                            if msg_count <= 10:
+                                logger.info(f"MEXC processing depth: sym={sym}, bids={len(bids)}, asks={len(asks)}")
                             try:
                                 await self.on_depth(sym, bids, asks, time.time())
                             except Exception as e:

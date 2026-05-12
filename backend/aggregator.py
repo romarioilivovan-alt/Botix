@@ -213,6 +213,12 @@ class Aggregator:
         agg.binance_book = OrderBook(bids=b, asks=a, ts=ts)
         agg.binance_book.version += 1
 
+        if not hasattr(self, '_binance_depth_count'):
+            self._binance_depth_count = {}
+        self._binance_depth_count[mexc] = self._binance_depth_count.get(mexc, 0) + 1
+        if self._binance_depth_count[mexc] == 1:
+            logger.info(f"First Binance depth for {mexc}: bid={b[0][0] if b else None}, ask={a[0][0] if a else None}")
+
         mid = agg.binance_book.mid
         if mid is not None:
             agg.fair_samples.append((ts, mid))
@@ -238,17 +244,30 @@ class Aggregator:
         agg.trade_samples.append((ts, sign * notional))
 
     def on_mexc_depth(self, mexc_symbol: str, bids: list, asks: list, ts: float) -> None:
+        if not hasattr(self, '_mexc_depth_debug_count'):
+            self._mexc_depth_debug_count = 0
+        self._mexc_depth_debug_count += 1
+        if self._mexc_depth_debug_count <= 3:
+            logger.info(f"aggregator.on_mexc_depth: symbol={mexc_symbol}, symbols_dict_has_it={mexc_symbol in self._symbols}")
+
         agg = self._symbols.get(mexc_symbol)
         if not agg:
+            if self._mexc_depth_debug_count <= 3:
+                logger.warning(f"aggregator.on_mexc_depth: symbol {mexc_symbol} not in _symbols dict. Available: {list(self._symbols.keys())}")
             return
         # `sub.depth.full` sends full top-N snapshots already sorted by MEXC.
         # bids are descending, asks are ascending - no need to sort again.
+        # MEXC format: [price, quantity, count] - we only need price and quantity
         try:
-            b = [(float(p), float(q)) for p, q in (bids or [])[:50] if float(q) > 0]
-            a = [(float(p), float(q)) for p, q in (asks or [])[:50] if float(q) > 0]
-        except (TypeError, ValueError):
+            b = [(float(p), float(q)) for p, q, *_ in (bids or [])[:50] if float(q) > 0]
+            a = [(float(p), float(q)) for p, q, *_ in (asks or [])[:50] if float(q) > 0]
+        except (TypeError, ValueError) as e:
+            if self._mexc_depth_debug_count <= 3:
+                logger.warning(f"aggregator.on_mexc_depth: parse error for {mexc_symbol}: {e}, bids sample={bids[:2] if bids else None}")
             return
         if not b or not a:
+            if self._mexc_depth_debug_count <= 3:
+                logger.warning(f"aggregator.on_mexc_depth: empty books for {mexc_symbol}: b={len(b)}, a={len(a)}")
             return
 
         agg.mexc_book = OrderBook(
@@ -257,6 +276,12 @@ class Aggregator:
             ts=ts,
         )
         agg.mexc_book.version += 1
+
+        if not hasattr(self, '_mexc_depth_count'):
+            self._mexc_depth_count = {}
+        self._mexc_depth_count[mexc_symbol] = self._mexc_depth_count.get(mexc_symbol, 0) + 1
+        if self._mexc_depth_count[mexc_symbol] == 1:
+            logger.info(f"First MEXC depth for {mexc_symbol}: bid={b[0][0] if b else None}, ask={a[0][0] if a else None}")
 
         # Track own MEXC mid for Bollinger-band self-reverting strategy
         m_mid = agg.mexc_book.mid
