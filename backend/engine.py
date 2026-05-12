@@ -64,8 +64,13 @@ class Engine:
         self.state.kill_switch = False
 
         # Compute first universe set up-front so we have something to subscribe to.
+        logger.info("=== Calling universe.refresh() ===")
         await self.universe.refresh()
-        await self._configure_universe(self.universe.working_set)
+        ws = self.universe.working_set
+        logger.info(f"=== universe.working_set = {ws} ({len(ws)} symbols) ===")
+        await self._configure_universe(ws)
+        logger.info(f"=== aggregator.symbols() = {self.aggregator.symbols()} ===")
+
 
         # WS clients
         self.binance_ws = BinanceMultiWS(
