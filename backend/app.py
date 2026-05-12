@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List
@@ -24,23 +25,26 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
 
 
-app = FastAPI(title="0fee Scanner Bot", version="0.2")
-
 cfg = load_config()
 state = AppState()
 engine = Engine(cfg, state)
 _exchange_trade_cache: Dict[str, Any] = {"ts": 0.0, "symbols": tuple(), "items": []}
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("=== LIFESPAN STARTUP ===", flush=True)
     await engine.start()
     asyncio.create_task(_ws_push_loop(), name="ws_push")
-
-
-@app.on_event("shutdown")
-async def on_shutdown() -> None:
+    print("=== LIFESPAN STARTUP COMPLETE ===", flush=True)
+    yield
+    # Shutdown
+    print("=== LIFESPAN SHUTDOWN ===", flush=True)
     await engine.shutdown()
+
+
+app = FastAPI(title="0fee Scanner Bot", version="0.2", lifespan=lifespan)
 
 
 @app.get("/")
