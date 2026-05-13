@@ -58,6 +58,8 @@ class _Quote:
     spread_bps_at_quote: Optional[float] = None
     fill_ratio: Optional[float] = None
     levels_eaten: Optional[int] = None
+    submitted_taker: bool = False
+    order_mode: str = ""
 
 
 def _trail_long(entry: float, best: float, sigma: float, hard_sl_pct: float,
@@ -270,6 +272,26 @@ def _vwap_by_qty(levels, qty_target: float, *, contract_size: float = 1.0):
     return total_value / denom, total_qty, total_value, eaten
 
 
+def _apply_ioc_adverse_fill_bps(levels, side: str, adverse_bps: float):
+    """Shift visible book levels against an IOC before simulating the fill.
+
+    This models the final signal->submit->match gap: by the time a capped IOC
+    reaches MEXC, executable asks can be higher for LONGs and bids can be lower
+    for SHORTs than the local websocket snapshot.
+    """
+    adverse = max(0.0, float(adverse_bps or 0.0))
+    if adverse <= 0:
+        return levels
+    side_u = str(side or "").upper()
+    if side_u == "LONG":
+        mult = 1.0 + adverse / 1e4
+    elif side_u == "SHORT":
+        mult = 1.0 - adverse / 1e4
+    else:
+        return levels
+    return [(float(p) * mult, q) for p, q in (levels or [])]
+
+
 def _realisable_exit_price(pos: ManagedPosition, book: OrderBook) -> float:
     """Estimate the actual close price we could hit right now.
 
@@ -437,6 +459,15 @@ class PaperExecutor:
                 return ov
         return None
 
+    def _evaluated_stats(self, symbol: str):
+        st = self.agg.compute_stats(symbol)
+        ov = self._override_for(symbol)
+        if ov is not None and ov.algorithms and hasattr(self.opp, "evaluate_multi"):
+            self.opp.evaluate_multi(symbol, st, ov)
+        elif hasattr(self.opp, "evaluate"):
+            self.opp.evaluate(symbol, st)
+        return st
+
     def _float_setting_for(self, symbol: str, field_name: str, default: float = 0.0) -> float:
         ov = self._override_for(symbol)
         if ov is not None:
@@ -471,6 +502,12 @@ class PaperExecutor:
             return int(ov.entry_latency_ms)
         return int(getattr(self.cfg.strategy, "entry_latency_ms", 200) or 200)
 
+    def _exit_latency_ms_for(self, symbol: str) -> int:
+        ov = self._override_for(symbol)
+        if ov and ov.exit_latency_ms is not None:
+            return int(ov.exit_latency_ms)
+        return int(getattr(self.cfg.strategy, "exit_latency_ms", 120) or 120)
+
     def _signal_max_age_ms_for(self, symbol: str) -> int:
         ov = self._override_for(symbol)
         if ov and ov.signal_max_age_ms is not None:
@@ -492,11 +529,38 @@ class PaperExecutor:
             return False
         return True
 
+    def _entry_book_age_block_reason(self, st: Any) -> str:
+        max_age_ms = float(getattr(self.cfg.risk, "stale_book_age_ms_kill", 0.0) or 0.0)
+        if max_age_ms <= 0:
+            return ""
+        mexc_age = getattr(st, "mexc_book_age_ms", None)
+        if mexc_age is not None and float(mexc_age) > max_age_ms:
+            return f"stale_mexc_book={float(mexc_age):.0f}ms"
+        binance_age = getattr(st, "binance_book_age_ms", None)
+        if binance_age is not None and float(binance_age) > max_age_ms:
+            return f"stale_binance_book={float(binance_age):.0f}ms"
+        return ""
+
     def _pre_submit_max_spread_drift_bps_for(self, symbol: str) -> float:
         ov = self._override_for(symbol)
         if ov and ov.pre_submit_max_spread_drift_bps is not None:
             return float(ov.pre_submit_max_spread_drift_bps)
         return float(getattr(self.cfg.strategy, "pre_submit_max_spread_drift_bps", 0.0) or 0.0)
+
+    async def _queue_position_close(self, pos: ManagedPosition, *, reason: str) -> None:
+        if pos.pending_close_reason:
+            return
+        now = time.time()
+        if pos.exit_signal_ts <= 0:
+            pos.exit_signal_ts = now
+        latency_ms = max(0, self._exit_latency_ms_for(pos.symbol))
+        pos.pending_close_reason = reason
+        pos.pending_close_at = now + latency_ms / 1000.0
+        await self.state.add_log(
+            "debug",
+            f"[paper] queue close {pos.symbol} {pos.side} ({reason}) "
+            f"after {latency_ms}ms",
+        )
 
     def _taker_ioc_price_buffer_bps_for(self, symbol: str) -> float:
         ov = self._override_for(symbol)
@@ -509,6 +573,38 @@ class PaperExecutor:
         if ov and ov.taker_ioc_min_fill_ratio is not None:
             return float(ov.taker_ioc_min_fill_ratio)
         return float(getattr(self.cfg.strategy, "taker_ioc_min_fill_ratio", 0.2) or 0.2)
+
+    def _taker_ioc_adverse_fill_bps_for(self, symbol: str) -> float:
+        ov = self._override_for(symbol)
+        if ov and ov.taker_ioc_adverse_fill_bps is not None:
+            return float(ov.taker_ioc_adverse_fill_bps)
+        return float(getattr(self.cfg.strategy, "taker_ioc_adverse_fill_bps", 0.0) or 0.0)
+
+    def _taker_market_min_fill_ratio_for(self, symbol: str) -> float:
+        ov = self._override_for(symbol)
+        if ov and getattr(ov, "taker_market_min_fill_ratio", None) is not None:
+            return float(ov.taker_market_min_fill_ratio)
+        return float(getattr(self.cfg.strategy, "taker_market_min_fill_ratio", 0.98) or 0.98)
+
+    def _taker_market_adverse_fill_bps_for(self, symbol: str) -> float:
+        ov = self._override_for(symbol)
+        if ov and getattr(ov, "taker_market_adverse_fill_bps", None) is not None:
+            return float(ov.taker_market_adverse_fill_bps)
+        return float(getattr(self.cfg.strategy, "taker_market_adverse_fill_bps", 0.0) or 0.0)
+
+    def _taker_order_mode_for(self, symbol: str) -> str:
+        ov = self._override_for(symbol)
+        raw = None
+        if ov and getattr(ov, "taker_order_mode", None) is not None:
+            raw = ov.taker_order_mode
+        if raw is None:
+            raw = getattr(self.cfg.strategy, "taker_order_mode", "")
+        mode = str(raw or "").strip().lower()
+        if mode in {"ioc", "limit_ioc", "limit-ioc", "order_type_3", "3"}:
+            return "ioc"
+        if mode in {"market", "mkt", "order_type_5", "5"}:
+            return "market"
+        return "ioc" if bool(getattr(self.cfg.strategy, "taker_ioc_simulation", False)) else "market"
 
     def _scalp_take_profit_bps_for(self, symbol: str) -> float:
         ov = self._override_for(symbol)
@@ -562,36 +658,39 @@ class PaperExecutor:
             return float(getattr(self.cfg.strategy, "imbalance_max_chase_bps", 0.0) or 0.0)
         return 0.0
 
-    def _signal_valid_for_fill(
+    def _signal_fill_snapshot(
         self,
         symbol: str,
         side: str,
         quote: Optional[_Quote] = None,
-    ) -> tuple[bool, str]:
+    ):
         """Re-check the signal right before simulated IOC fill."""
-        st = self.agg.compute_stats(symbol)
-        ov = self._override_for(symbol)
-        if ov is not None and ov.algorithms:
-            self.opp.evaluate_multi(symbol, st, ov)
-        else:
-            self.opp.evaluate(symbol, st)
-        # A signal only needs to be "ideal" when we first decide to trade it.
-        # Right before the simulated IOC fill, the microstructure can flatten
-        # for a few milliseconds without invalidating the original thesis.
-        # At fill time we keep the hard sanity checks (age, drift, explicit
-        # side flip) but avoid reapplying every entry blocker.
+        st = self._evaluated_stats(symbol)
+        # A signal only needs to be "ideal" when we first decide to trade it,
+        # but with 300-500ms modeled latency we still need a minimum current
+        # strength check right before fill. Without that, a queue can survive
+        # until fill even after the setup has weakened into a low-edge stub.
+        stale_reason = self._entry_book_age_block_reason(st)
+        if stale_reason:
+            return st, False, stale_reason
         if quote is None:
             if st.blocked_reason:
-                return False, st.blocked_reason
+                return st, False, st.blocked_reason
             if not st.side_hint:
-                return False, "no_side_hint"
+                return st, False, "no_side_hint"
             if st.side_hint != side:
-                return False, f"side_flip={st.side_hint}"
+                return st, False, f"side_flip={st.side_hint}"
             min_entry_score = self._min_entry_score_for(symbol)
             if st.score < min_entry_score:
-                return False, f"score {st.score:.2f} < {min_entry_score:.2f}"
-        elif st.side_hint and st.side_hint != side:
-            return False, f"side_flip={st.side_hint}"
+                return st, False, f"score {st.score:.2f} < {min_entry_score:.2f}"
+        else:
+            if not st.side_hint:
+                return st, False, "no_side_hint_fill"
+            if st.side_hint != side:
+                return st, False, f"side_flip={st.side_hint}"
+            min_entry_score = self._min_entry_score_for(symbol)
+            if st.score < min_entry_score:
+                return st, False, f"score {st.score:.2f} < {min_entry_score:.2f}"
         if quote is not None:
             max_age_ms = self._signal_max_age_ms_for(symbol)
             if max_age_ms > 0 and quote.signal_ts > 0:
@@ -603,7 +702,7 @@ class PaperExecutor:
                         age_ms <= age_limit_ms + grace_ms
                         and self._fresh_books_for_age_grace(st)
                     ):
-                        return False, f"signal_age={age_ms:.0f}ms"
+                        return st, False, f"signal_age={age_ms:.0f}ms"
             max_spread_drift = self._pre_submit_max_spread_drift_bps_for(symbol)
             if (
                 max_spread_drift > 0
@@ -615,8 +714,17 @@ class PaperExecutor:
                 else:
                     spread_drift = quote.spread_bps_at_quote - st.spread_bps
                 if spread_drift > max_spread_drift:
-                    return False, f"spread_drift={spread_drift:.2f}bps"
-        return True, ""
+                    return st, False, f"spread_drift={spread_drift:.2f}bps"
+        return st, True, ""
+
+    def _signal_valid_for_fill(
+        self,
+        symbol: str,
+        side: str,
+        quote: Optional[_Quote] = None,
+    ) -> tuple[bool, str]:
+        _st, ok, why = self._signal_fill_snapshot(symbol, side, quote)
+        return ok, why
 
     def _fill_respects_fair(
         self,
@@ -730,6 +838,17 @@ class PaperExecutor:
         depth: Optional[float],
     ) -> None:
         try:
+            key = str(blocked or "unknown").split("=", 1)[0].split(":", 1)[0].strip() or "unknown"
+            counts = getattr(self.state, "grid_reject_counts", None)
+            if counts is None:
+                counts = {}
+                setattr(self.state, "grid_reject_counts", counts)
+            counts[key] = int(counts.get(key, 0) or 0) + 1
+        except Exception:
+            pass
+        if not bool(getattr(self.cfg.strategy, "grid_log_candidates", True)):
+            return
+        try:
             await self.store.insert_candidate(
                 time.time(),
                 symbol,
@@ -798,7 +917,8 @@ class PaperExecutor:
             book_top_notional=depth,
             margin_pct_override=(ov.margin_pct if ov else None),
             leverage_override=(ov.leverage if ov else None),
-            max_notional_override=(ov.max_notional_usdt if ov else None),
+            book_depth_consume_pct_override=(ov.book_depth_consume_pct if ov else None),
+            max_notional_usdt_override=(ov.max_notional_usdt if ov else None),
         )
         if not decision.accept:
             await self.state.add_log("debug", f"reject {sym} {opp.side}: {decision.reason}")
@@ -820,6 +940,7 @@ class PaperExecutor:
             # Actual VWAP fill happens on a later tick using the THEN-current book,
             # which is what a real market order would hit.
             latency_ms = max(0, self._entry_latency_ms_for(sym))
+            order_mode = self._taker_order_mode_for(sym)
             quote_price = book.best_ask if opp.side == "LONG" else book.best_bid
             now_ts = time.time()
             queue_age_ms = max(0.0, (now_ts - opp.signal_ts) * 1000.0) if opp.signal_ts > 0 else 0.0
@@ -841,11 +962,14 @@ class PaperExecutor:
                 entry_algo=opp.algorithm,
                 entry_score=opp.score,
                 spread_bps_at_quote=spread_bps_at_quote,
+                submitted_taker=True,
+                order_mode=order_mode,
             )
             self._quotes[sym] = q
             await self.state.add_log(
                 "debug",
-                f"[paper] taker queued {sym} {opp.side} (fill in {latency_ms}ms, q_age={queue_age_ms:.0f}ms)",
+                f"[paper] taker queued {sym} {opp.side} mode={order_mode} "
+                f"(fill in {latency_ms}ms, q_age={queue_age_ms:.0f}ms)",
             )
             return
         else:
@@ -905,8 +1029,13 @@ class PaperExecutor:
                 f"[paper] taker {sym} {opp.side} @ {quote_price:.6g} "
                 f"(notional={decision.notional_usdt:.2f}, lev={decision.leverage})",
             )
-            await self._open_position(q, fill_price=quote_price,
-                                      fair=fair_for_open, sigma=sigma_for_open)
+            await self._open_position(
+                q,
+                fill_price=quote_price,
+                fair=fair_for_open,
+                sigma=sigma_for_open,
+                agg_stats=agg_stats,
+            )
             return
 
         q = _Quote(
@@ -946,44 +1075,53 @@ class PaperExecutor:
             if q.taker_open_at is not None:
                 if now < q.taker_open_at:
                     continue  # still within latency window — wait
-                ok, why = self._signal_valid_for_fill(sym, q.side, q)
-                if not ok:
-                    await self.state.add_log(
-                        "debug",
-                        f"[paper] skip {sym} {q.side}: stale signal ({why})",
-                    )
-                    await self._record_candidate_reject(
-                        symbol=sym,
-                        side=q.side,
-                        score=q.entry_score,
-                        z=q.z_at_quote,
-                        blocked=f"stale_signal:{why}",
-                        fair=q.fair_at_quote,
-                        mexc=(book.best_bid + book.best_ask) / 2.0,
-                        depth=book.top_notional(10, contract_size=q.contract_size),
-                    )
-                    self._quotes.pop(sym, None)
-                    continue
+                agg_stats = None
+                if not q.submitted_taker:
+                    agg_stats, ok, why = self._signal_fill_snapshot(sym, q.side, q)
+                    if not ok:
+                        await self.state.add_log(
+                            "debug",
+                            f"[paper] skip {sym} {q.side}: stale signal ({why})",
+                        )
+                        await self._record_candidate_reject(
+                            symbol=sym,
+                            side=q.side,
+                            score=q.entry_score,
+                            z=q.z_at_quote,
+                            blocked=f"stale_signal:{why}",
+                            fair=q.fair_at_quote,
+                            mexc=(book.best_bid + book.best_ask) / 2.0,
+                            depth=book.top_notional(10, contract_size=q.contract_size),
+                        )
+                        self._quotes.pop(sym, None)
+                        continue
                 # Latency elapsed. Walk current (post-latency) book for fill.
                 target_levels = book.asks if q.side == "LONG" else book.bids
-                if bool(getattr(self.cfg.strategy, "taker_ioc_simulation", False)):
+                order_mode = q.order_mode or self._taker_order_mode_for(sym)
+                q.order_mode = order_mode
+                if order_mode == "ioc":
                     buf_bps = self._taker_ioc_price_buffer_bps_for(sym)
                     min_fill_ratio = self._taker_ioc_min_fill_ratio_for(sym)
+                    adverse_bps = self._taker_ioc_adverse_fill_bps_for(sym)
+                    raw_price = float(book.best_ask if q.side == "LONG" else book.best_bid)
                     if q.side == "LONG":
-                        limit_price = q.price * (1.0 + buf_bps / 1e4)
+                        limit_price = raw_price * (1.0 + buf_bps / 1e4)
                     else:
-                        limit_price = q.price * (1.0 - buf_bps / 1e4)
+                        limit_price = raw_price * (1.0 - buf_bps / 1e4)
+                    fill_levels = _apply_ioc_adverse_fill_bps(target_levels, q.side, adverse_bps)
                     vwap, qty_real, notional_real, eaten = _vwap_by_notional_capped(
-                        target_levels,
+                        fill_levels,
                         q.notional,
                         side=q.side,
                         limit_price=limit_price,
                         contract_size=q.contract_size,
                     )
                 else:
-                    min_fill_ratio = 0.5
+                    min_fill_ratio = self._taker_market_min_fill_ratio_for(sym)
+                    adverse_bps = self._taker_market_adverse_fill_bps_for(sym)
+                    fill_levels = _apply_ioc_adverse_fill_bps(target_levels, q.side, adverse_bps)
                     vwap, qty_real, notional_real, eaten = _vwap_by_notional(
-                        target_levels, q.notional, contract_size=q.contract_size
+                        fill_levels, q.notional, contract_size=q.contract_size
                     )
                 if vwap is None or qty_real <= 0:
                     await self._record_candidate_reject(
@@ -1001,7 +1139,7 @@ class PaperExecutor:
                 if notional_real < q.notional * min_fill_ratio:
                     await self.state.add_log(
                         "debug",
-                        f"[paper] skip {sym} {q.side}: ioc/latency thin fill "
+                        f"[paper] skip {sym} {q.side}: {order_mode}/latency thin fill "
                         f"(filled {notional_real:.0f}/{q.notional:.0f} USDT in {eaten} levels)",
                     )
                     await self._record_candidate_reject(
@@ -1024,7 +1162,8 @@ class PaperExecutor:
                 q.margin = notional_real / max(1.0, q.leverage)
                 q.fill_ratio = notional_real / max(requested_notional, 1e-12) if requested_notional > 0 else None
                 q.levels_eaten = eaten
-                agg_stats = self.agg.compute_stats(sym)
+                if agg_stats is None:
+                    agg_stats = self._evaluated_stats(sym)
                 fair_for_open = agg_stats.fair if agg_stats.fair is not None else (
                     (book.best_bid + book.best_ask) / 2.0
                 )
@@ -1050,12 +1189,17 @@ class PaperExecutor:
                     self._quotes.pop(sym, None)
                     continue
                 self._quotes.pop(sym, None)
-                await self._open_position(q, fill_price=vwap,
-                                          fair=fair_for_open, sigma=sigma_for_open)
+                await self._open_position(
+                    q,
+                    fill_price=vwap,
+                    fair=fair_for_open,
+                    sigma=sigma_for_open,
+                    agg_stats=agg_stats,
+                )
                 continue
 
             # ---- Maker (limit) entry path ----
-            agg_stats = self.agg.compute_stats(sym)
+            agg_stats, ok, why = self._signal_fill_snapshot(sym, q.side, q)
             fair = agg_stats.fair
             sigma = agg_stats.sigma_spread or q.sigma_at_quote
             z = agg_stats.z_score
@@ -1070,7 +1214,6 @@ class PaperExecutor:
                 await self.state.add_log("debug", f"[paper] timeout {sym}")
                 continue
 
-            ok, why = self._signal_valid_for_fill(sym, q.side, q)
             if not ok:
                 self._quotes.pop(sym, None)
                 await self.state.add_log("debug", f"[paper] cancel {sym}: stale signal ({why})")
@@ -1086,12 +1229,26 @@ class PaperExecutor:
 
             if filled and fair is not None:
                 self._quotes.pop(sym, None)
-                await self._open_position(q, fill_price=q.price, fair=fair, sigma=sigma)
+                await self._open_position(
+                    q,
+                    fill_price=q.price,
+                    fair=fair,
+                    sigma=sigma,
+                    agg_stats=agg_stats,
+                )
 
-    async def _open_position(self, q: _Quote, *, fill_price: float,
-                             fair: float, sigma: float) -> None:
+    async def _open_position(
+        self,
+        q: _Quote,
+        *,
+        fill_price: float,
+        fair: float,
+        sigma: float,
+        agg_stats=None,
+    ) -> None:
         now = time.time()
-        agg_stats = self.agg.compute_stats(q.symbol)
+        if agg_stats is None:
+            agg_stats = self._evaluated_stats(q.symbol)
 
         # Fixed TP at fair value — used by mean-reversion: exit when the
         # MEXC-vs-Binance deviation has collapsed back to the reference.
@@ -1102,6 +1259,9 @@ class PaperExecutor:
                 entry_spread_bps = ((fill_price - fair) / fair) * 1e4
             else:
                 entry_spread_bps = ((fair - fill_price) / fair) * 1e4
+        resolved_entry_score = float(getattr(agg_stats, "score", 0.0) or 0.0)
+        if resolved_entry_score <= 0 and q.entry_score:
+            resolved_entry_score = float(q.entry_score)
         pos = ManagedPosition(
             symbol=q.symbol,
             side=q.side,
@@ -1120,7 +1280,7 @@ class PaperExecutor:
             signal_ts=q.signal_ts,
             entry_latency_ms=(now - q.signal_ts) * 1000.0 if q.signal_ts > 0 else 0.0,
             entry_algo=q.entry_algo,
-            entry_score=q.entry_score,
+            entry_score=resolved_entry_score,
             max_hold_sec=self._max_hold_sec_for(q.symbol),
             entry_fill_ratio=q.fill_ratio,
             entry_levels_eaten=q.levels_eaten,
@@ -1190,6 +1350,36 @@ class PaperExecutor:
             if pos.margin_usdt > 0:
                 pos.last_pnl_pct = pos.last_pnl_usdt / pos.margin_usdt * 100.0
 
+            paper_exchange_sl = bool(getattr(s, "paper_exchange_sl", False))
+            if paper_exchange_sl:
+                sl_triggered_now = False
+                if pos.side == "LONG" and pos.stop_price is not None and book.best_bid <= pos.stop_price:
+                    sl_triggered_now = True
+                if pos.side == "SHORT" and pos.stop_price is not None and book.best_ask >= pos.stop_price:
+                    sl_triggered_now = True
+                if sl_triggered_now:
+                    if pos.exit_signal_ts <= 0:
+                        pos.exit_signal_ts = now
+                    exit_price = _realisable_exit_price(pos, book)
+                    await self._close_position(pos, exit_price=exit_price, reason="sl")
+                    continue
+
+            if pos.pending_close_reason:
+                if now < pos.pending_close_at:
+                    continue
+                close_levels = book.bids if pos.side == "LONG" else book.asks
+                vwap, _, _, _ = _vwap_by_qty(close_levels, pos.qty, contract_size=pos.contract_size)
+                exit_price = vwap if vwap is not None else (
+                    book.best_bid if pos.side == "LONG" else book.best_ask
+                )
+                await self._close_position(pos, exit_price=exit_price, reason=pos.pending_close_reason)
+                continue
+
+            loss_cap = float(getattr(self.cfg.risk, "max_open_loss_per_position_usdt", 0.0) or 0.0)
+            if loss_cap > 0 and pos.last_pnl_usdt <= -loss_cap:
+                await self._queue_position_close(pos, reason="loss_cap")
+                continue
+
             stats = self.agg.compute_stats(sym)
             current_fair = float(stats.fair) if getattr(stats, "fair", None) else None
             current_imbalance = getattr(stats, "mexc_book_imbalance", None)
@@ -1210,10 +1400,8 @@ class PaperExecutor:
                 if pos.side == "SHORT" and book.best_ask is not None and book.best_ask <= pos.tp_price:
                     tp_hit = True
                 if tp_hit:
-                    close_levels = book.bids if pos.side == "LONG" else book.asks
-                    vwap, _, _, _ = _vwap_by_qty(close_levels, pos.qty, contract_size=pos.contract_size)
-                    exit_price = vwap if vwap is not None else pos.tp_price
-                    await self._close_position(pos, exit_price=exit_price, reason="tp")
+                    pos.exit_signal_ts = now
+                    await self._queue_position_close(pos, reason="tp")
                     continue
 
             # Quick scalp TP: take the move as soon as we get a small favorable
@@ -1222,8 +1410,7 @@ class PaperExecutor:
             scalp_tp_bps = self._scalp_take_profit_bps_for(sym)
             if scalp_tp_bps > 0 and pos.entry_price > 0:
                 if move_bps_now >= scalp_tp_bps:
-                    pos.exit_signal_ts = now
-                    await self._close_position(pos, exit_price=exit_price_now, reason="scalp_tp")
+                    await self._queue_position_close(pos, reason="scalp_tp")
                     continue
 
             profit_protect_arm_bps = self._float_setting_for(sym, "profit_protect_arm_bps")
@@ -1243,8 +1430,7 @@ class PaperExecutor:
                 min_profit_bps=profit_protect_min_bps,
                 edge_collapse_bps=edge_collapse_exit_bps,
             ):
-                pos.exit_signal_ts = now
-                await self._close_position(pos, exit_price=exit_price_now, reason="profit_protect")
+                await self._queue_position_close(pos, reason="profit_protect")
                 continue
 
             do_settled_profit_exit, _ = _update_settled_profit_state(
@@ -1258,8 +1444,7 @@ class PaperExecutor:
                 edge_bps=self._float_setting_for(sym, "settled_profit_edge_bps"),
             )
             if do_settled_profit_exit:
-                pos.exit_signal_ts = now
-                await self._close_position(pos, exit_price=exit_price_now, reason="settled_profit")
+                await self._queue_position_close(pos, reason="settled_profit")
                 continue
 
             if _should_bad_entry_exit(
@@ -1273,8 +1458,7 @@ class PaperExecutor:
                 exit_bps=self._float_setting_for(sym, "bad_entry_exit_bps"),
                 edge_collapse_bps=edge_collapse_exit_bps,
             ):
-                pos.exit_signal_ts = now
-                await self._close_position(pos, exit_price=exit_price_now, reason="bad_entry")
+                await self._queue_position_close(pos, reason="bad_entry")
                 continue
 
             edge_loss_after_sec = self._float_setting_for(sym, "edge_loss_after_sec")
@@ -1286,8 +1470,24 @@ class PaperExecutor:
                 and residual_edge_bps is not None
                 and residual_edge_bps <= edge_collapse_exit_bps
             ):
-                pos.exit_signal_ts = now
-                await self._close_position(pos, exit_price=exit_price_now, reason="edge_loss")
+                await self._queue_position_close(pos, reason="edge_loss")
+                continue
+
+            # Density reversal exit: if book imbalance flipped against us AND we're not in profit, exit early
+            density_exit_log = float(getattr(s, "density_exit_log", 0.0) or 0.0)
+            if density_exit_log > 0 and age_sec >= 0.5 and move_bps_now <= 0.3:
+                if current_imbalance is not None:
+                    if pos.side == "LONG" and current_imbalance < -density_exit_log:
+                        await self._queue_position_close(pos, reason="density_reversal")
+                        continue
+                    if pos.side == "SHORT" and current_imbalance > density_exit_log:
+                        await self._queue_position_close(pos, reason="density_reversal")
+                        continue
+
+            # Quick stop: if price moved against us beyond threshold, exit immediately
+            quick_stop_bps = float(getattr(s, "quick_stop_bps", 0.0) or 0.0)
+            if quick_stop_bps < 0 and move_bps_now <= quick_stop_bps:
+                await self._queue_position_close(pos, reason="quick_stop")
                 continue
 
             dead_trade_after_sec = self._float_setting_for(sym, "dead_trade_after_sec")
@@ -1299,8 +1499,7 @@ class PaperExecutor:
                 and residual_edge_bps is not None
                 and residual_edge_bps <= edge_collapse_exit_bps
             ):
-                pos.exit_signal_ts = now
-                await self._close_position(pos, exit_price=exit_price_now, reason="dead_trade")
+                await self._queue_position_close(pos, reason="dead_trade")
                 continue
 
             # Scratch exit: if a momentum trade did not move in our favor quickly,
@@ -1309,8 +1508,7 @@ class PaperExecutor:
             scratch_exit_bps = self._scratch_exit_bps_for(sym)
             if scratch_exit_sec > 0 and pos.entry_price > 0 and age_sec >= scratch_exit_sec:
                 if move_bps_now <= scratch_exit_bps:
-                    pos.exit_signal_ts = now
-                    await self._close_position(pos, exit_price=exit_price_now, reason="scratch")
+                    await self._queue_position_close(pos, reason="scratch")
                     continue
 
             # Signal-flip exit (book-imbalance scalping): if MEXC top-5 imbalance
@@ -1326,12 +1524,8 @@ class PaperExecutor:
                     elif pos.side == "SHORT" and cur_imb > exit_thr:
                         flipped = True
                     if flipped:
-                        close_levels = book.bids if pos.side == "LONG" else book.asks
-                        vwap, _, _, _ = _vwap_by_qty(close_levels, pos.qty, contract_size=pos.contract_size)
-                        exit_price = vwap if vwap is not None else (
-                            book.best_bid if pos.side == "LONG" else book.best_ask
-                        )
-                        await self._close_position(pos, exit_price=exit_price, reason="signal_flip")
+                        pos.exit_signal_ts = now
+                        await self._queue_position_close(pos, reason="signal_flip")
                         continue
 
             # SL trailing update (throttled)
@@ -1379,23 +1573,19 @@ class PaperExecutor:
                 sl_triggered = True
 
             if sl_triggered:
-                close_levels = book.bids if pos.side == "LONG" else book.asks
-                vwap, qty_filled, _, _ = _vwap_by_qty(close_levels, pos.qty, contract_size=pos.contract_size)
-                exit_price = vwap if vwap is not None else pos.stop_price
-                pos.exit_signal_ts = now  # Mark exit decision time
-                await self._close_position(pos, exit_price=exit_price, reason="sl")
+                if paper_exchange_sl:
+                    if pos.exit_signal_ts <= 0:
+                        pos.exit_signal_ts = now
+                    exit_price = _realisable_exit_price(pos, book)
+                    await self._close_position(pos, exit_price=exit_price, reason="sl")
+                else:
+                    await self._queue_position_close(pos, reason="sl")
                 continue
 
             # Time-exit backstop — also goes through book.
             max_hold_sec = pos.max_hold_sec if pos.max_hold_sec > 0 else float(s.max_hold_sec)
             if now - pos.open_ts > max_hold_sec:
-                close_levels = book.bids if pos.side == "LONG" else book.asks
-                vwap, qty_filled, _, _ = _vwap_by_qty(close_levels, pos.qty, contract_size=pos.contract_size)
-                exit_price = vwap if vwap is not None else (
-                    book.best_bid if pos.side == "LONG" else book.best_ask
-                )
-                pos.exit_signal_ts = now  # Mark exit decision time
-                await self._close_position(pos, exit_price=exit_price, reason="time")
+                await self._queue_position_close(pos, reason="time")
                 continue
 
     async def _close_position(self, pos: ManagedPosition, *, exit_price: float, reason: str) -> None:
@@ -1403,6 +1593,10 @@ class PaperExecutor:
         # Calculate exit latency (decision → actual close)
         if pos.exit_signal_ts > 0:
             pos.exit_latency_ms = (now - pos.exit_signal_ts) * 1000.0
+        pos.close_submit_latency_ms = pos.exit_latency_ms
+        pos.close_ack_to_closed_ms = 0.0
+        pos.pending_close_reason = None
+        pos.pending_close_at = 0.0
 
         if pos.side == "LONG":
             realized = (exit_price - pos.entry_price) * pos.qty * pos.contract_size
@@ -1426,9 +1620,17 @@ class PaperExecutor:
         if pos.margin_usdt > 0 and realized < -pos.margin_usdt * 0.99:
             realized = -pos.margin_usdt * 0.99
             reason = f"{reason}_liq"
+        final_reason = reason
+        if reason == "sl" and pos.stop_price is not None:
+            locked_profit = (
+                (pos.side == "LONG" and pos.stop_price >= pos.entry_price)
+                or (pos.side == "SHORT" and pos.stop_price <= pos.entry_price)
+            )
+            if locked_profit:
+                final_reason = "trail_sl"
         pos.realized_pnl = realized
         pos.closed = True
-        pos.close_reason = reason
+        pos.close_reason = final_reason
         pos.close_ts = now
         pos.close_price = exit_price
 
@@ -1437,6 +1639,19 @@ class PaperExecutor:
             if self.state.balance > self.state.session_peak_balance:
                 self.state.session_peak_balance = self.state.balance
             self.state.strategy_realized_pnl += realized
+            self.state.session_trade_count += 1
+            if realized < 0:
+                self.state.consecutive_losses += 1
+            else:
+                self.state.consecutive_losses = 0
+            try:
+                self.state.grid_total_trades = int(getattr(self.state, "grid_total_trades", 0) or 0) + 1
+                if realized > 0:
+                    self.state.grid_wins = int(getattr(self.state, "grid_wins", 0) or 0) + 1
+                elif realized < 0:
+                    self.state.grid_losses = int(getattr(self.state, "grid_losses", 0) or 0) + 1
+            except Exception:
+                pass
             if self.state.balance > self.state.strategy_session_peak_balance:
                 self.state.strategy_session_peak_balance = self.state.balance
             self.state.positions.pop(pos.symbol, None)
@@ -1453,7 +1668,7 @@ class PaperExecutor:
                 "exit": exit_price,
                 "pnl": realized,
                 "pnl_pct": (realized / pos.margin_usdt * 100.0) if pos.margin_usdt > 0 else 0.0,
-                "reason": reason,
+                "reason": final_reason,
                 "duration": now - pos.open_ts,
                 "entry_latency_ms": pos.entry_latency_ms,
                 "exit_latency_ms": pos.exit_latency_ms,
@@ -1464,7 +1679,7 @@ class PaperExecutor:
         await self.state.add_log(
             "info" if realized >= 0 else "warn",
             f"[paper] CLOSE {pos.symbol} {pos.side} @ {exit_price:.6g} "
-            f"({reason}) PnL={realized:+.4f} USDT",
+            f"({final_reason}) PnL={realized:+.4f} USDT",
         )
 
         try:
@@ -1498,11 +1713,12 @@ class PaperExecutor:
                 "fair_at_open": pos.fair_at_open,
                 "sigma_at_open": pos.sigma_at_open,
                 "z_at_open": None,
-                "close_reason": reason,
+                "close_reason": final_reason,
                 "extra": {
                     "best_excursion": pos.best_excursion,
                     "best_excursion_bps": best_excursion_bps,
                     "realized_bps": realized_bps,
+                    "stop_price_at_close": pos.stop_price,
                     "entry_algo": pos.entry_algo,
                     "entry_score": pos.entry_score,
                     "entry_latency_ms": pos.entry_latency_ms,
@@ -1526,9 +1742,16 @@ class PaperExecutor:
 
     async def _log_equity_periodically(self) -> None:
         now = time.time()
-        if now - self._equity_log_last_ts < 5.0:
+        equity_log_sec = float(getattr(self.cfg.strategy, "equity_log_sec", 5.0) or 5.0)
+        if now - self._equity_log_last_ts < max(1.0, equity_log_sec):
             return
         self._equity_log_last_ts = now
+        if (
+            bool(getattr(self.cfg.strategy, "grid_skip_idle_equity", False))
+            and not self.state.positions
+            and int(self.state.session_trade_count or 0) <= 0
+        ):
+            return
 
         equity = self._current_equity()
         if equity > self.state.session_peak_balance:
@@ -1559,6 +1782,12 @@ class PaperExecutor:
         if self.state.kill_switch:
             return
         current_equity = self._current_equity()
+        max_trades = int(getattr(self.cfg.risk, "max_trades_per_session", 0) or 0)
+        if max_trades > 0 and int(self.state.session_trade_count or 0) >= max_trades:
+            self.state.kill_switch = True
+            self.state.last_kill_reason = f"max_trades {max_trades}"
+            await self.state.add_log("error", f"KILL: {self.state.last_kill_reason}")
+            return
         # Daily reset
         now = time.time()
         if now - self.state.day_start_ts > 86400:
@@ -1583,3 +1812,37 @@ class PaperExecutor:
                 self.state.kill_switch = True
                 self.state.last_kill_reason = f"drawdown {dd*100:.1f}%"
                 await self.state.add_log("error", f"KILL: {self.state.last_kill_reason}")
+                return
+
+        strategy_start = (
+            self.state.strategy_session_starting_balance
+            if self.state.strategy_session_starting_balance > 0
+            else self.state.session_starting_balance
+        )
+        strategy_open_pnl = sum(float(p.last_pnl_usdt or 0.0) for p in self.state.positions.values())
+        strategy_equity = strategy_start + float(self.state.strategy_realized_pnl or 0.0) + strategy_open_pnl
+        session_loss_usdt = max(0.0, strategy_start - strategy_equity)
+
+        session_loss_usdt_cap = float(getattr(self.cfg.risk, "session_loss_usdt_kill", 0.0) or 0.0)
+        if session_loss_usdt_cap > 0 and session_loss_usdt >= session_loss_usdt_cap:
+            self.state.kill_switch = True
+            self.state.last_kill_reason = f"session loss {session_loss_usdt:.2f} USDT >= {session_loss_usdt_cap:.2f}"
+            await self.state.add_log("error", f"KILL: {self.state.last_kill_reason}")
+            return
+
+        session_loss_pct_cap = float(getattr(self.cfg.risk, "session_loss_pct_kill", 0.0) or 0.0)
+        if strategy_start > 0 and session_loss_pct_cap > 0:
+            session_loss_pct = session_loss_usdt / strategy_start
+            if session_loss_pct >= session_loss_pct_cap:
+                self.state.kill_switch = True
+                self.state.last_kill_reason = (
+                    f"session loss {session_loss_pct*100:.1f}% >= {session_loss_pct_cap*100:.1f}%"
+                )
+                await self.state.add_log("error", f"KILL: {self.state.last_kill_reason}")
+                return
+
+        consecutive_losses_kill = int(getattr(self.cfg.risk, "consecutive_losses_kill", 0) or 0)
+        if consecutive_losses_kill > 0 and int(self.state.consecutive_losses or 0) >= consecutive_losses_kill:
+            self.state.kill_switch = True
+            self.state.last_kill_reason = f"consecutive losses {self.state.consecutive_losses}"
+            await self.state.add_log("error", f"KILL: {self.state.last_kill_reason}")

@@ -70,11 +70,14 @@ class MexcSignatureGenerator:
 
 class MexcFuturesAPI:
     CONTRACT_BASE_URL = "https://contract.mexc.com"
+    CONTRACT_PRIVATE_BASE_URL = "https://contract.mexc.com/api/v1"
+    FUTURES_PRIVATE_BASE_URL = "https://futures.mexc.com/api/v1"
     _HOT_PRIVATE_ENDPOINTS = {
         "private/account/assets",
         "private/position/open_positions",
         "private/position/leverage",
         "private/order/create",
+        "private/order/submit",
         "private/order/cancel_all",
         "private/order/batch_query",
     }
@@ -273,6 +276,35 @@ class MexcFuturesAPI:
             return True
         return endpoint.startswith("private/")
 
+    def _build_private_headers(self, method: str, endpoint: str, data: Any) -> Dict[str, str]:
+        timestamp, signature = self.sg.generate_signature(method, endpoint, data)
+        headers = {
+            "authorization": self.account.uid,
+            "x-mxc-nonce": str(timestamp),
+            "x-mxc-sign": signature,
+            "content-type": "application/json",
+            "x-language": "en-US",
+            "language": "English",
+            "platform": "H5-web",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "origin": "https://www.mexc.com",
+            "referer": "https://www.mexc.com/",
+        }
+        try:
+            did = getattr(self.account, "device_id", "") or ""
+            if isinstance(did, str) and did.strip():
+                did = did.strip()
+                headers["device-id"] = did
+                headers["mtoken"] = did
+        except Exception:
+            pass
+        if "mtoken" not in headers:
+            try:
+                headers["mtoken"] = hashlib.md5(self.account.uid.encode()).hexdigest()
+            except Exception:
+                headers["mtoken"] = "".join(random.choice("0123456789abcdef") for _ in range(32))
+        return headers
+
     def _normalize_order_lookup_response(self, raw: Dict) -> Dict:
         if not raw.get("success"):
             return {
@@ -310,39 +342,7 @@ class MexcFuturesAPI:
         proxy = self._trade_session_proxy if hot_private else self._session_proxy
         assert session is not None
         url = f"{self.base_url}/{endpoint}"
-        timestamp, signature = self.sg.generate_signature(method, endpoint, data)
-        headers = {
-            "authorization": self.account.uid,
-            "x-mxc-nonce": str(timestamp),
-            "x-mxc-sign": signature,
-            "content-type": "application/json",
-            "x-language": "en-US",
-            "language": "English",
-            "platform": "H5-web",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "origin": "https://www.mexc.com",
-            "referer": "https://www.mexc.com/",
-        }
-        # Some MEXC deployments rely on a client fingerprint header.
-        try:
-            did = getattr(self.account, "device_id", "") or ""
-            if isinstance(did, str) and did.strip():
-                did = did.strip()
-                headers["device-id"] = did
-                # Empirically, MEXC web futures endpoints often expect an mtoken header.
-                # The web client uses a fingerprint visitor id; using the same value keeps requests consistent.
-                headers["mtoken"] = did
-        except Exception:
-            pass
-        # If no device-id was provided, still send a stable-looking mtoken.
-        # Some endpoints return 4xx when mtoken header is missing.
-        if "mtoken" not in headers:
-            try:
-                # deterministic-ish: hash of uid
-                h = hashlib.md5(self.account.uid.encode()).hexdigest()
-                headers["mtoken"] = h
-            except Exception:
-                headers["mtoken"] = "".join(random.choice("0123456789abcdef") for _ in range(32))
+        headers = self._build_private_headers(method, endpoint, data)
         body = json.dumps(data, separators=(",", ":")) if data is not None else None
         started_at = time.monotonic()
         log_level = logging.DEBUG if self._is_hot_private_endpoint(endpoint) else logging.INFO
@@ -377,11 +377,87 @@ class MexcFuturesAPI:
                         result.get("code"),
                         elapsed_ms,
                     )
+                if isinstance(result, dict):
+                    result.setdefault("_latency_ms", elapsed_ms)
+                    result.setdefault("_endpoint", endpoint)
                 return result
         except Exception as e:
             elapsed_ms = int((time.monotonic() - started_at) * 1000)
             logger.error("Request error on %s %s after %dms: %s", method, endpoint, elapsed_ms, e)
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e), "_latency_ms": elapsed_ms, "_endpoint": endpoint}
+
+    async def _request_fast_private(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        data: Any = None,
+        host: str = "contract",
+    ) -> Dict:
+        await self._ensure_trade_session()
+        assert self.trade_session is not None
+        host_norm = str(host or "contract").strip().lower()
+        if host_norm == "futures":
+            base = self.FUTURES_PRIVATE_BASE_URL
+        else:
+            host_norm = "contract"
+            base = self.CONTRACT_PRIVATE_BASE_URL
+        url = f"{base}/{endpoint.lstrip('/')}"
+        headers = self._build_private_headers(method, endpoint, data)
+        body = json.dumps(data, separators=(",", ":")) if data is not None else None
+        started_at = time.monotonic()
+        try:
+            async with self.trade_session.request(
+                method=method,
+                url=url,
+                headers=headers,
+                data=body,
+                proxy=self._trade_session_proxy,
+            ) as response:
+                text = await response.text()
+                try:
+                    result = json.loads(text)
+                except Exception:
+                    logger.error(
+                        "Non-JSON response from MEXC fast %s %s: %s",
+                        method,
+                        url,
+                        text[:500],
+                    )
+                    return {"success": False, "message": text}
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "MEXC fast_request %s %s/%s -> success=%s code=%s latency=%dms",
+                        method,
+                        host_norm,
+                        endpoint,
+                        result.get("success"),
+                        result.get("code"),
+                        elapsed_ms,
+                    )
+                if isinstance(result, dict):
+                    result.setdefault("_latency_ms", elapsed_ms)
+                    result.setdefault("_endpoint", endpoint)
+                    result.setdefault("_fast_host", host_norm)
+                return result
+        except Exception as e:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            logger.error(
+                "Fast request error on %s %s/%s after %dms: %s",
+                method,
+                host_norm,
+                endpoint,
+                elapsed_ms,
+                e,
+            )
+            return {
+                "success": False,
+                "message": str(e),
+                "_latency_ms": elapsed_ms,
+                "_endpoint": endpoint,
+                "_fast_host": host_norm,
+            }
 
     async def _request_market(self, path: str) -> Dict:
         await self._ensure_session()
@@ -684,7 +760,142 @@ class MexcFuturesAPI:
             log_payload["price"] = payload["price"]
         logger.info("Creating order: %s", log_payload)
 
-        return await self._request("POST", "private/order/create", data=payload)
+        params = {"mhash": payload["mhash"]} if payload.get("mhash") else None
+        return await self._request("POST", "private/order/create", data=payload, params=params)
+
+    async def submit_legacy_order(
+        self,
+        symbol: str,
+        side: int,
+        order_type: str = "5",
+        price: Optional[float] = None,
+        vol: Optional[float] = None,
+        leverage: Optional[int] = None,
+        margin_mode: Optional[int] = None,
+        reduce_only: bool = False,
+        position_id: Optional[int] = None,
+    ) -> Dict:
+        """Use the older web-private /private/order/submit path for hot orders."""
+        if vol is None:
+            vol = self.account.default_size
+        if leverage is None:
+            leverage = self.account.default_leverage
+        if margin_mode is None:
+            margin_mode = getattr(self.account, "margin_mode", 1)
+        if margin_mode not in (1, 2):
+            margin_mode = 1
+
+        payload: Dict[str, Any] = {
+            "symbol": self._norm_symbol(symbol),
+            "vol": vol,
+            "side": side,
+            "type": int(float(order_type)),
+            "openType": margin_mode,
+            "leverage": leverage,
+            "externalOid": f"zf_{int(time.time() * 1000)}_{random.randint(1000, 9999)}",
+            "positionMode": 1,
+        }
+        if price is not None and price > 0:
+            payload["price"] = self._plain_decimal_number(price)
+        if reduce_only:
+            payload["reduceOnly"] = True
+        if position_id is not None:
+            try:
+                payload["positionId"] = int(position_id)
+            except Exception:
+                pass
+
+        log_payload = {
+            "symbol": payload["symbol"],
+            "side": payload["side"],
+            "type": payload["type"],
+            "openType": payload["openType"],
+            "vol": payload["vol"],
+            "leverage": payload["leverage"],
+            "path": "legacy_submit",
+        }
+        if "price" in payload:
+            log_payload["price"] = payload["price"]
+        if reduce_only:
+            log_payload["reduceOnly"] = True
+        logger.info("Submitting legacy order: %s", log_payload)
+
+        res = await self._request("POST", "private/order/submit", data=payload)
+        if isinstance(res, dict):
+            res.setdefault("_submit_path", "legacy_submit")
+        return res
+
+    async def submit_fast_create_order(
+        self,
+        symbol: str,
+        side: int,
+        order_type: str = "5",
+        price: Optional[float] = None,
+        vol: Optional[float] = None,
+        leverage: Optional[int] = None,
+        margin_mode: Optional[int] = None,
+        reduce_only: bool = False,
+        position_id: Optional[int] = None,
+        host: str = "contract",
+    ) -> Dict:
+        """Use contract/futures private order/create, matching the faster bot12 transport."""
+        if vol is None:
+            vol = self.account.default_size
+        if leverage is None:
+            leverage = self.account.default_leverage
+        if margin_mode is None:
+            margin_mode = getattr(self.account, "margin_mode", 1)
+        if margin_mode not in (1, 2):
+            margin_mode = 1
+
+        payload: Dict[str, Any] = {
+            "symbol": self._norm_symbol(symbol),
+            "side": int(side),
+            "openType": int(margin_mode),
+            "type": str(int(float(order_type))),
+            "vol": vol,
+            "leverage": int(leverage),
+            "priceProtect": "0",
+            "ts": int(time.time() * 1000),
+            "marketCeiling": "false",
+        }
+        # Keep market orders identical to bot12; only attach a price for non-market orders.
+        if price is not None and price > 0 and payload["type"] != "5":
+            payload["price"] = self._plain_decimal_number(price)
+        if reduce_only:
+            payload["reduceOnly"] = "true"
+        if position_id is not None:
+            try:
+                payload["positionId"] = int(position_id)
+            except Exception:
+                pass
+
+        host_norm = "futures" if str(host or "").strip().lower() == "futures" else "contract"
+        submit_path = f"{host_norm}_create"
+        log_payload = {
+            "symbol": payload["symbol"],
+            "side": payload["side"],
+            "type": payload["type"],
+            "openType": payload["openType"],
+            "vol": payload["vol"],
+            "leverage": payload["leverage"],
+            "path": submit_path,
+        }
+        if "price" in payload:
+            log_payload["price"] = payload["price"]
+        if reduce_only:
+            log_payload["reduceOnly"] = True
+        logger.info("Submitting fast create order: %s", log_payload)
+
+        res = await self._request_fast_private(
+            "POST",
+            "private/order/create",
+            data=payload,
+            host=host_norm,
+        )
+        if isinstance(res, dict):
+            res.setdefault("_submit_path", submit_path)
+        return res
 
     async def _postprocess_market_order_response(
         self,

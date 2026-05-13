@@ -1,4 +1,4 @@
-"""Verify Binance provides stock futures data."""
+﻿"""Verify Binance provides stock futures data."""
 import asyncio
 import aiohttp
 

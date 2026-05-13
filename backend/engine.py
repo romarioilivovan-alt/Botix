@@ -16,6 +16,7 @@ from .aggregator import Aggregator
 from .allocator import CapitalAllocator
 from .binance_ws import BinanceMultiWS
 from .config import AppConfig, save_config
+from .mexc_private_ws import MexcPrivateWS
 from .mexc_trader import MexcTrader
 from .mexc_ws import MexcMultiWS
 from .models import UserAccount
@@ -44,6 +45,7 @@ class Engine:
 
         self.binance_ws: Optional[BinanceMultiWS] = None
         self.mexc_ws: Optional[MexcMultiWS] = None
+        self.mexc_private_ws: Optional[MexcPrivateWS] = None
 
         self.executor = None  # PaperExecutor | RealExecutor
 
@@ -73,13 +75,23 @@ class Engine:
             on_trade=self._on_binance_trade,
         )
         self.mexc_ws = MexcMultiWS(on_depth=self._on_mexc_depth)
+        self.mexc_private_ws = None
+        if self.cfg.mode == "real" and self.cfg.mexc_web.web_uid.strip():
+            self.mexc_private_ws = MexcPrivateWS(self.cfg.mexc_web.web_uid.strip())
 
         # Tasks
         binance_initial = [self.universe.reference_for(s) for s in self.universe.working_set if self.universe.reference_for(s)]
         self._tasks.append(asyncio.create_task(self.binance_ws.run(binance_initial), name="binance_ws"))
         self._tasks.append(asyncio.create_task(self.mexc_ws.run(self.universe.working_set), name="mexc_ws"))
+        if self.mexc_private_ws is not None:
+            self._tasks.append(asyncio.create_task(
+                self.mexc_private_ws.run(self.universe.working_set),
+                name="mexc_private_ws",
+            ))
         self._tasks.append(asyncio.create_task(self.universe.loop(self._on_universe_change), name="universe"))
         self._tasks.append(asyncio.create_task(self._connectivity_watcher(), name="conn_watch"))
+        if self._needs_mexc_fair_feed():
+            self._tasks.append(asyncio.create_task(self._mexc_fair_loop(), name="mexc_fair"))
 
         # Auth ping (best-effort)
         if self.cfg.mexc_web.web_uid.strip():
@@ -109,6 +121,8 @@ class Engine:
             self.binance_ws.stop()
         if self.mexc_ws:
             self.mexc_ws.stop()
+        if self.mexc_private_ws:
+            self.mexc_private_ws.stop()
         for t in list(self._tasks):
             t.cancel()
         self._tasks.clear()
@@ -127,15 +141,25 @@ class Engine:
         async with self.state.lock:
             self.state.engine_running = True
             self.state.kill_switch = False
+            self.state.last_kill_reason = ""
+            self.state.run_started_ts = time.time()
+            self.state.session_trade_count = 0
+            self.state.consecutive_losses = 0
+            self.state.emergency_close_count = 0
+            self.state.last_emergency_action = ""
+            self.state.last_emergency_ts = 0.0
+            self.state.auth_error_count = 0
+            self.state.private_api_error_count = 0
 
-        # Start scoring + executor loops
-        if self._scoring_task is None or self._scoring_task.done():
-            self._scoring_task = asyncio.create_task(self._scoring_loop(), name="scoring_loop")
-            self._tasks.append(self._scoring_task)
-
+        # Start executor before scoring so live balance/positions caches are warm
+        # before the first tradeable candidate can be emitted.
         if self.executor is not None:
             self.executor._stop.clear()
             self._tasks.append(asyncio.create_task(self.executor.loop(), name="executor_loop"))
+
+        if self._scoring_task is None or self._scoring_task.done():
+            self._scoring_task = asyncio.create_task(self._scoring_loop(), name="scoring_loop")
+            self._tasks.append(self._scoring_task)
 
         await self.state.add_log("info", "Engine: RUN")
 
@@ -144,7 +168,11 @@ class Engine:
             self.state.engine_running = False
         if self.executor:
             try:
-                self.executor.stop()
+                graceful_stop = getattr(self.executor, "graceful_stop", None)
+                if callable(graceful_stop):
+                    await graceful_stop("manual_stop")
+                else:
+                    self.executor.stop()
             except Exception:
                 pass
         await self.state.add_log("info", "Engine: STOP")
@@ -154,41 +182,10 @@ class Engine:
         async with self.state.lock:
             self.state.kill_switch = True
             self.state.last_kill_reason = "manual"
-        # Try to close positions on exchange (real mode); paper closes naturally on next tick.
-        if isinstance(self.executor, RealExecutor) and self.trader is not None:
+        if isinstance(self.executor, RealExecutor):
             try:
-                raw_list = await self.trader.get_positions_raw()
-                allowed_symbols = {
-                    str(sym or "").upper()
-                    for sym in (self.state.universe or [])
-                    if str(sym or "").strip()
-                }
-                managed_symbols = {
-                    str(sym or "").upper()
-                    for sym in self.state.positions.keys()
-                    if str(sym or "").strip()
-                }
-                target_symbols = managed_symbols or allowed_symbols
-                scoped_raw = []
-                for p in raw_list:
-                    sym = str(p.get("symbol") or "").upper()
-                    if target_symbols and sym not in target_symbols:
-                        continue
-                    scoped_raw.append(p)
-                    side = "LONG" if int(p.get("positionType") or 0) == 1 else "SHORT"
-                    hold = float(p.get("holdVol") or 0.0)
-                    lev = int(float(p.get("leverage") or 1))
-                    if hold > 0:
-                        try:
-                            await self.trader.close_market(sym, side, hold, lev)
-                        except Exception:
-                            pass
-                # cancel all open orders
-                for sym in {str(p.get("symbol") or "").upper() for p in scoped_raw}:
-                    try:
-                        await self.trader.cancel_all_for(sym)
-                    except Exception:
-                        pass
+                await self.executor._emergency_flatten_all(reason="manual_kill")
+                self.executor.stop()
             except Exception as e:
                 await self.state.add_log("error", f"kill_all error: {e}")
         await self.state.add_log("warn", "KILL ALL invoked")
@@ -201,6 +198,16 @@ class Engine:
         await self.run_stop()
         self.cfg.mode = mode
         save_config(self.cfg)
+        if mode == "real" and self.mexc_private_ws is None and self.cfg.mexc_web.web_uid.strip():
+            self.mexc_private_ws = MexcPrivateWS(self.cfg.mexc_web.web_uid.strip())
+            if self.universe is not None:
+                self._tasks.append(asyncio.create_task(
+                    self.mexc_private_ws.run(self.universe.working_set),
+                    name="mexc_private_ws",
+                ))
+        elif mode != "real" and self.mexc_private_ws is not None:
+            self.mexc_private_ws.stop()
+            self.mexc_private_ws = None
         await self._configure_executor()
         async with self.state.lock:
             self.state.engine_mode = mode
@@ -234,6 +241,7 @@ class Engine:
         acc = UserAccount(
             uid=uid, device_id=did, mhash=mhash,
             proxy=self.cfg.mexc_web.proxy,
+            order_submit_path=str(getattr(self.cfg.mexc_web, "order_submit_path", "") or "legacy_submit"),
         )
         self.trader = MexcTrader(acc, proxy=self.cfg.mexc_web.proxy)
 
@@ -271,6 +279,8 @@ class Engine:
             )
         if self.mexc_ws:
             await self.mexc_ws.update_symbols(working_set)
+        if self.mexc_private_ws:
+            await self.mexc_private_ws.update_symbols(working_set)
         await self.state.add_log("info", f"universe -> {len(working_set)} symbols")
 
     async def _configure_executor(self) -> None:
@@ -285,6 +295,7 @@ class Engine:
             self.executor = RealExecutor(
                 self.cfg, self.state, self.aggregator,
                 self.opportunity, self.allocator, self.store, self.trader,
+                mexc_private_ws=self.mexc_private_ws,
             )
         elif self.cfg.mode == "logger":
             self.executor = None
@@ -305,6 +316,32 @@ class Engine:
                     self.state.mexc_ws_ok = bool(self.mexc_ws and self.mexc_ws.is_connected)
             except Exception:
                 pass
+            await asyncio.sleep(1.0)
+
+    def _needs_mexc_fair_feed(self) -> bool:
+        mode = str(getattr(self.cfg.strategy, "fair_price_mode", "mid") or "mid").strip().lower()
+        return mode in {"mexc_fair", "blend_mexc_fair"}
+
+    async def _mexc_fair_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                if self.trader is not None and self._needs_mexc_fair_feed():
+                    poll_sec = max(0.3, float(getattr(self.cfg.strategy, "mexc_fair_poll_sec", 1.0) or 1.0))
+                    fair_ttl = max(0.2, min(poll_sec, 1.0))
+                    symbols = list(self.aggregator.symbols())
+                    for sym in symbols:
+                        if self._stop.is_set():
+                            break
+                        try:
+                            fair = await self.trader.api.get_fair_price_cached(sym, ttl=fair_ttl)
+                            if fair is not None and fair > 0:
+                                self.aggregator.on_mexc_fair_price(sym, fair, time.time())
+                        except Exception:
+                            continue
+                    await asyncio.sleep(poll_sec)
+                    continue
+            except Exception as e:
+                logger.debug("mexc fair loop error: %s", e)
             await asyncio.sleep(1.0)
 
     # WS callbacks
@@ -397,22 +434,26 @@ class Engine:
                         continue
 
                     try:
+                        # Direct call — bypass signal queue for minimum latency
                         await self.executor.on_signal(opp)
+                        accepted = True
                     except Exception as e:
                         logger.warning("executor.on_signal error: %s", e)
+                        accepted = False
                     # Persist accepted candidates after the executor has seen the
                     # signal so analytics do not sit on the trade-critical path.
                     try:
                         await self.store.insert_candidate(
                             now, sym, opp.side, opp.score, opp.z, st.spread_bps,
                             st.fair, st.mexc_mid, st.mexc_book_top10_notional,
-                            None, accepted=True,
+                            None, accepted=accepted,
                         )
                     except Exception:
                         pass
-                    emitted += 1
-                    if emitted >= 10:
-                        break
+                    if accepted:
+                        emitted += 1
+                        if emitted >= 10:
+                            break
 
                 # Periodic cleanup
                 if now - cleanup_last > 5.0:
@@ -422,4 +463,4 @@ class Engine:
             except Exception as e:
                 logger.exception("scoring loop error: %s", e)
 
-            await asyncio.sleep(max(0.05, float(getattr(self.cfg.strategy, "paper_tick_sec", 0.2) or 0.2)))
+            await asyncio.sleep(max(0.01, float(getattr(self.cfg.strategy, "paper_tick_sec", 0.2) or 0.2)))

@@ -38,7 +38,8 @@ class CapitalAllocator:
         book_top_notional: float,
         margin_pct_override: Optional[float] = None,
         leverage_override: Optional[int] = None,
-        max_notional_override: Optional[float] = None,
+        book_depth_consume_pct_override: Optional[float] = None,
+        max_notional_usdt_override: Optional[float] = None,
     ) -> AllocationDecision:
         # Kill switch / engine off
         if state.kill_switch:
@@ -83,24 +84,21 @@ class CapitalAllocator:
 
         notional = margin * lev
 
+        if max_notional_usdt_override is not None:
+            max_notional = float(max_notional_usdt_override or 0.0)
+            if max_notional > 0 and notional > max_notional:
+                notional = max_notional
+                margin = notional / lev
+
         # Cap by book depth
-        cap = float(self.cfg.risk.book_depth_consume_pct) * float(book_top_notional or 0.0)
+        cap_pct = (
+            float(book_depth_consume_pct_override)
+            if book_depth_consume_pct_override is not None
+            else float(self.cfg.risk.book_depth_consume_pct)
+        )
+        cap = cap_pct * float(book_top_notional or 0.0)
         if cap > 0 and notional > cap:
             notional = cap
-            margin = notional / lev
-
-        # Optional hard cap by configured notional limit.
-        global_notional_cap = float(getattr(self.cfg.risk, "max_notional_usdt", 0.0) or 0.0)
-        symbol_notional_cap = float(max_notional_override or 0.0)
-        notional_cap = 0.0
-        if global_notional_cap > 0 and symbol_notional_cap > 0:
-            notional_cap = min(global_notional_cap, symbol_notional_cap)
-        elif global_notional_cap > 0:
-            notional_cap = global_notional_cap
-        elif symbol_notional_cap > 0:
-            notional_cap = symbol_notional_cap
-        if notional_cap > 0 and notional > notional_cap:
-            notional = notional_cap
             margin = notional / lev
 
         if notional <= 0 or margin <= 0:

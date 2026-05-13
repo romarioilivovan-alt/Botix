@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = Path(os.environ.get("ZFEE_CONFIG_PATH") or _PROJECT_ROOT / "config.json")
+CONFIG_PATH: Optional[Path] = None
 
 LEGACY_SYMBOL_ALIASES = {
     "NVDA_USDT": "NVIDIA_USDT",
@@ -39,6 +39,7 @@ class MexcWebConfig:
     device_id: str = ""
     mhash: str = ""
     proxy: Optional[str] = None
+    order_submit_path: str = "legacy_submit"
 
 
 @dataclass
@@ -119,9 +120,6 @@ class StrategyConfig:
     confluence_max_chase_bps: float = 0.0
 
     taker_entry: bool = False
-    # In real mode, optionally restrict entries to symbols that currently
-    # have MEXC zero-fee status.
-    real_require_zero_fee: bool = False
 
     entry_latency_ms: int = 200
     signal_max_age_ms: int = 0
@@ -133,12 +131,21 @@ class StrategyConfig:
     micro_path_shape_min: float = 0.0
     micro_back_hole_max_points: float = 0.0
     exit_latency_ms: int = 200
+    paper_exchange_sl: bool = False
+    grid_log_candidates: bool = True
+    grid_skip_idle_equity: bool = False
+    grid_emit_interval_sec: float = 0.5
+    equity_log_sec: float = 5.0
     paper_tick_sec: float = 0.2
     taker_fee_bps: float = 0.0
     maker_fee_bps: float = 0.0
+    taker_order_mode: str = ""
     taker_ioc_simulation: bool = False
     taker_ioc_price_buffer_bps: float = 2.0
     taker_ioc_min_fill_ratio: float = 0.2
+    taker_ioc_adverse_fill_bps: float = 0.0
+    taker_market_min_fill_ratio: float = 0.98
+    taker_market_adverse_fill_bps: float = 0.0
     quote_timeout_sec: float = 5.0
     quote_offset_ticks: int = 1
     min_spread_samples: int = 60
@@ -151,6 +158,9 @@ class StrategyConfig:
     sigma_spread_window_sec: float = 30.0
     ofi_window_sec: float = 0.5
     fair_velocity_window_sec: float = 1.0
+    fair_price_mode: str = "mid"
+    fair_ema_alpha: float = 0.2
+    mexc_fair_poll_sec: float = 1.0
 
     hard_sl_margin_pct: float = 0.01
     hard_sl_pct: float = 0.0
@@ -190,6 +200,10 @@ class StrategyConfig:
     bad_entry_min_age_sec: float = 0.0
     bad_entry_spread_bps: float = 0.0
     bad_entry_exit_bps: float = 0.0
+    late_impulse_reject_enabled: bool = False
+    late_impulse_min_edge_bps: float = 0.0
+    late_impulse_max_chase_bps: float = 0.0
+    late_impulse_max_fair_age_ms: float = 0.0
 
     # Multi-strategy mode: ANY | BEST | CONSENSUS
     algo_mode: str = "ANY"
@@ -214,11 +228,21 @@ class RiskConfig:
 
     daily_loss_pct_kill: float = 0.30
     max_drawdown_pct_kill: float = 0.50
+    session_loss_usdt_kill: float = 0.0
+    session_loss_pct_kill: float = 0.0
+    consecutive_losses_kill: int = 0
+    max_runtime_sec: float = 0.0
+    max_trades_per_session: int = 0
+    max_open_loss_per_position_usdt: float = 0.0
+    stale_data_kill_sec: float = 0.0
+    stale_book_age_ms_kill: float = 0.0
+    auth_error_kill_count: int = 0
+    private_api_error_kill_count: int = 0
+    emergency_close_on_stop: bool = True
+    emergency_close_retries: int = 3
 
     min_balance_usdt: float = 5.0
     min_trade_margin_usdt: float = 1.0
-    # Hard cap for single-trade notional (0 = disabled).
-    max_notional_usdt: float = 0.0
 
 
 @dataclass
@@ -227,6 +251,7 @@ class SymbolOverride:
     enabled: bool = True
     leverage: Optional[int] = None
     margin_pct: Optional[float] = None
+    book_depth_consume_pct: Optional[float] = None
     max_notional_usdt: Optional[float] = None
     sl_pct: Optional[float] = None
     max_hold_sec: Optional[float] = None
@@ -240,6 +265,7 @@ class SymbolOverride:
     anti_fade_30s_bps: Optional[float] = None
     min_abs_spread_bps: Optional[float] = None
     entry_latency_ms: Optional[int] = None
+    exit_latency_ms: Optional[int] = None
     signal_max_age_ms: Optional[int] = None
     pre_submit_max_spread_drift_bps: Optional[float] = None
     micro_levels: Optional[int] = None
@@ -248,8 +274,12 @@ class SymbolOverride:
     micro_support_shape_min: Optional[float] = None
     micro_path_shape_min: Optional[float] = None
     micro_back_hole_max_points: Optional[float] = None
+    taker_order_mode: Optional[str] = None
     taker_ioc_price_buffer_bps: Optional[float] = None
     taker_ioc_min_fill_ratio: Optional[float] = None
+    taker_ioc_adverse_fill_bps: Optional[float] = None
+    taker_market_min_fill_ratio: Optional[float] = None
+    taker_market_adverse_fill_bps: Optional[float] = None
     scalp_take_profit_bps: Optional[float] = None
     scratch_exit_sec: Optional[float] = None
     scratch_exit_bps: Optional[float] = None
@@ -272,8 +302,42 @@ class SymbolOverride:
     bad_entry_min_age_sec: Optional[float] = None
     bad_entry_spread_bps: Optional[float] = None
     bad_entry_exit_bps: Optional[float] = None
+    late_impulse_reject_enabled: Optional[bool] = None
+    late_impulse_min_edge_bps: Optional[float] = None
+    late_impulse_max_chase_bps: Optional[float] = None
+    late_impulse_max_fair_age_ms: Optional[float] = None
     algorithms: Optional[List[str]] = None  # None = use global
     algo_mode: Optional[str] = None         # None = use global
+    raw_momentum_min_bps: Optional[float] = None
+    raw_momentum_max_bps: Optional[float] = None
+    raw_momentum_require_5s_agree: Optional[bool] = None
+    raw_momentum_anti_fade_30s_bps: Optional[float] = None
+    raw_momentum_require_lag: Optional[bool] = None
+    raw_momentum_min_lag_bps: Optional[float] = None
+    raw_momentum_max_chase_bps: Optional[float] = None
+    raw_momentum_require_book_alignment: Optional[bool] = None
+    raw_momentum_min_imbalance_log: Optional[float] = None
+    raw_momentum_require_ofi_alignment: Optional[bool] = None
+    raw_momentum_min_ofi_usdt: Optional[float] = None
+    imbalance_min_log: Optional[float] = None
+    imbalance_max_log: Optional[float] = None
+    imbalance_require_lag: Optional[bool] = None
+    imbalance_min_lag_bps: Optional[float] = None
+    imbalance_max_chase_bps: Optional[float] = None
+    confluence_min_velocity_bps: Optional[float] = None
+    confluence_max_velocity_bps: Optional[float] = None
+    confluence_min_ofi_usdt: Optional[float] = None
+    confluence_min_imbalance_log: Optional[float] = None
+    confluence_require_lag: Optional[bool] = None
+    confluence_min_lag_bps: Optional[float] = None
+    confluence_max_chase_bps: Optional[float] = None
+    book_lean_min_ratio: Optional[float] = None
+    bb_revert_z_entry: Optional[float] = None
+    bb_revert_z_max: Optional[float] = None
+    entry_z: Optional[float] = None
+    meanrev_min_spread_bps: Optional[float] = None
+    meanrev_require_book_alignment: Optional[bool] = None
+    meanrev_min_imbalance_log: Optional[float] = None
 
 
 @dataclass
@@ -317,27 +381,26 @@ def _merge_dataclass(dc, data: dict) -> None:
                 pass
 
 
+def _resolve_config_path() -> Path:
+    if CONFIG_PATH is not None:
+        return Path(CONFIG_PATH)
+    env_path = os.environ.get("ZFEE_CONFIG_PATH")
+    if env_path:
+        return Path(env_path)
+    return _PROJECT_ROOT / "config.json"
+
+
 def load_config() -> AppConfig:
     cfg = AppConfig()
-    if not CONFIG_PATH.exists():
+    config_path = _resolve_config_path()
+    if not config_path.exists():
         return cfg
     try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        data = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return cfg
     if not isinstance(data, dict):
         return cfg
-
-    # Validate web_uid is configured (not a placeholder)
-    mexc_web_data = data.get("mexc_web", {})
-    if isinstance(mexc_web_data, dict):
-        web_uid = str(mexc_web_data.get("web_uid", "")).strip()
-        if not web_uid or web_uid == "YOUR_WEB_UID_HERE":
-            raise ValueError(
-                "MEXC web_uid is not configured. "
-                "Please copy config.example.json to config.json and fill in your actual MEXC credentials. "
-                "web_uid should start with 'WEB' followed by your account hash."
-            )
 
     # Extract symbol_overrides before generic merge (list-of-dicts, not a nested dataclass)
     raw_overrides = data.pop("symbol_overrides", None)
@@ -353,17 +416,21 @@ def load_config() -> AppConfig:
                 continue
             ov = SymbolOverride(symbol=sym)
             for fname in (
-                "enabled", "leverage", "margin_pct", "max_notional_usdt", "sl_pct", "max_hold_sec",
+                "enabled", "leverage", "margin_pct", "book_depth_consume_pct", "max_notional_usdt",
+                "sl_pct", "max_hold_sec",
                 "cooldown_min_sec", "cooldown_max_sec",
                 "allow_long", "allow_short",
                 "min_entry_score", "min_lag_bps", "max_chase_bps",
                 "anti_fade_30s_bps", "min_abs_spread_bps",
-                "entry_latency_ms", "signal_max_age_ms",
+                "entry_latency_ms", "exit_latency_ms", "signal_max_age_ms",
                 "pre_submit_max_spread_drift_bps",
                 "micro_levels", "micro_path_hole_max_points",
                 "micro_support_ratio_min", "micro_support_shape_min",
                 "micro_path_shape_min", "micro_back_hole_max_points",
+                "taker_order_mode",
                 "taker_ioc_price_buffer_bps", "taker_ioc_min_fill_ratio",
+                "taker_ioc_adverse_fill_bps",
+                "taker_market_min_fill_ratio", "taker_market_adverse_fill_bps",
                 "scalp_take_profit_bps", "scratch_exit_sec", "scratch_exit_bps",
                 "use_fair_tp",
                 "profit_protect_arm_bps", "profit_giveback_bps",
@@ -375,7 +442,26 @@ def load_config() -> AppConfig:
                 "dead_trade_after_sec", "dead_trade_max_bps",
                 "bad_entry_guard_sec", "bad_entry_min_age_sec",
                 "bad_entry_spread_bps", "bad_entry_exit_bps",
+                "late_impulse_reject_enabled",
+                "late_impulse_min_edge_bps",
+                "late_impulse_max_chase_bps",
+                "late_impulse_max_fair_age_ms",
                 "algorithms", "algo_mode",
+                "raw_momentum_min_bps", "raw_momentum_max_bps",
+                "raw_momentum_require_5s_agree", "raw_momentum_anti_fade_30s_bps",
+                "raw_momentum_require_lag", "raw_momentum_min_lag_bps",
+                "raw_momentum_max_chase_bps", "raw_momentum_require_book_alignment",
+                "raw_momentum_min_imbalance_log", "raw_momentum_require_ofi_alignment",
+                "raw_momentum_min_ofi_usdt",
+                "imbalance_min_log", "imbalance_max_log", "imbalance_require_lag",
+                "imbalance_min_lag_bps", "imbalance_max_chase_bps",
+                "confluence_min_velocity_bps", "confluence_max_velocity_bps",
+                "confluence_min_ofi_usdt", "confluence_min_imbalance_log",
+                "confluence_require_lag", "confluence_min_lag_bps",
+                "confluence_max_chase_bps", "book_lean_min_ratio",
+                "bb_revert_z_entry", "bb_revert_z_max",
+                "entry_z", "meanrev_min_spread_bps",
+                "meanrev_require_book_alignment", "meanrev_min_imbalance_log",
             ):
                 if fname in item:
                     setattr(ov, fname, item[fname])
@@ -399,7 +485,7 @@ def load_config() -> AppConfig:
 
 
 def save_config(cfg: AppConfig) -> None:
-    CONFIG_PATH.write_text(
+    _resolve_config_path().write_text(
         json.dumps(asdict(cfg), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

@@ -167,7 +167,12 @@ class BinanceMultiWS:
         if kind.startswith("depth"):
             bids = data.get("b") or []
             asks = data.get("a") or []
-            ts = time.time()
+            recv_ts = time.time()
+            try:
+                raw_ts = data.get("E") or data.get("T")
+                ts = float(raw_ts) / 1000.0 if raw_ts else recv_ts
+            except Exception:
+                ts = recv_ts
             try:
                 await self.on_depth(sym_u, bids, asks, ts)
             except Exception as e:

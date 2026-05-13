@@ -16,7 +16,7 @@ import aiosqlite
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = Path(os.environ.get("ZFEE_DB_PATH") or _PROJECT_ROOT / "data.sqlite")
+DB_PATH: Optional[Path] = None
 
 
 SCHEMA = """
@@ -74,16 +74,64 @@ CREATE TABLE IF NOT EXISTS candidates_log (
 );
 
 CREATE INDEX IF NOT EXISTS ix_cand_ts ON candidates_log(ts);
+
+CREATE TABLE IF NOT EXISTS execution_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL,
+    mode TEXT NOT NULL,
+    symbol TEXT,
+    side TEXT,
+    phase TEXT NOT NULL,
+    reason TEXT,
+    order_mode TEXT,
+    order_id INTEGER,
+    position_id INTEGER,
+    signal_age_ms REAL,
+    binance_book_age_ms REAL,
+    mexc_book_age_ms REAL,
+    submit_ack_ms REAL,
+    fill_delay_ms REAL,
+    managed_delay_ms REAL,
+    close_submit_ms REAL,
+    close_ack_to_closed_ms REAL,
+    entry_spread_bps REAL,
+    fair REAL,
+    mexc_mid REAL,
+    price REAL,
+    notional REAL,
+    fill_ratio REAL,
+    endpoint TEXT,
+    private_ws_connected INTEGER,
+    auth_error_streak INTEGER,
+    extra TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_exec_events_ts ON execution_events(ts);
+CREATE INDEX IF NOT EXISTS ix_exec_events_symbol ON execution_events(symbol);
+CREATE INDEX IF NOT EXISTS ix_exec_events_phase ON execution_events(phase);
 """
 
 
+def _resolve_db_path(db_path: Optional[Path] = None) -> Path:
+    if db_path is not None:
+        return Path(db_path)
+    if DB_PATH is not None:
+        return Path(DB_PATH)
+    env_path = os.environ.get("ZFEE_DB_PATH")
+    if env_path:
+        return Path(env_path)
+    return _PROJECT_ROOT / "data.sqlite"
+
+
 class Store:
-    def __init__(self, db_path: Path = DB_PATH) -> None:
-        self.path = db_path
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        self.path = _resolve_db_path(db_path)
         self._db: Optional[aiosqlite.Connection] = None
         self._managed_positions_path = self.path.parent / "managed_positions.json"
 
     async def open(self) -> None:
+        if self._db:
+            return
         self._db = await aiosqlite.connect(str(self.path))
         self._db.row_factory = aiosqlite.Row
         for pragma in (
@@ -114,9 +162,13 @@ class Store:
 
     # ---------- writes ----------
 
-    async def insert_trade(self, row: Dict[str, Any]) -> None:
+    async def _ensure_open(self) -> None:
         if not self._db:
-            return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            await self.open()
+
+    async def insert_trade(self, row: Dict[str, Any]) -> None:
+        await self._ensure_open()
         await self._db.execute(
             """INSERT INTO trades(
                 ts, mode, symbol, side, entry, exit, qty, notional, margin, leverage,
@@ -152,8 +204,7 @@ class Store:
 
     async def insert_equity(self, ts: float, mode: str, balance: float,
                             equity: float, open_positions: int) -> None:
-        if not self._db:
-            return
+        await self._ensure_open()
         await self._db.execute(
             "INSERT INTO equity(ts, mode, balance, equity, open_positions) VALUES (?,?,?,?,?)",
             (ts, mode, balance, equity, open_positions),
@@ -166,14 +217,73 @@ class Store:
                                fair: Optional[float], mexc: Optional[float],
                                depth: Optional[float], blocked: Optional[str],
                                accepted: bool) -> None:
-        if not self._db:
-            return
+        await self._ensure_open()
         await self._db.execute(
             """INSERT INTO candidates_log(
                 ts, symbol, side, score, z, spread_bps, fair, mexc, depth, blocked, accepted
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ts, symbol, side, float(score or 0.0), z, spread_bps, fair, mexc, depth,
              blocked, 1 if accepted else 0),
+        )
+        await self._db.commit()
+
+    async def insert_execution_event(self, row: Dict[str, Any]) -> None:
+        await self._ensure_open()
+
+        def _float_or_none(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+        def _int_or_none(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        await self._db.execute(
+            """INSERT INTO execution_events(
+                ts, mode, symbol, side, phase, reason, order_mode, order_id, position_id,
+                signal_age_ms, binance_book_age_ms, mexc_book_age_ms,
+                submit_ack_ms, fill_delay_ms, managed_delay_ms,
+                close_submit_ms, close_ack_to_closed_ms, entry_spread_bps,
+                fair, mexc_mid, price, notional, fill_ratio, endpoint,
+                private_ws_connected, auth_error_streak, extra
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row.get("ts", time.time()),
+                row.get("mode", "paper"),
+                row.get("symbol"),
+                row.get("side"),
+                row.get("phase") or "unknown",
+                row.get("reason"),
+                row.get("order_mode"),
+                _int_or_none(row.get("order_id")),
+                _int_or_none(row.get("position_id")),
+                _float_or_none(row.get("signal_age_ms")),
+                _float_or_none(row.get("binance_book_age_ms")),
+                _float_or_none(row.get("mexc_book_age_ms")),
+                _float_or_none(row.get("submit_ack_ms")),
+                _float_or_none(row.get("fill_delay_ms")),
+                _float_or_none(row.get("managed_delay_ms")),
+                _float_or_none(row.get("close_submit_ms")),
+                _float_or_none(row.get("close_ack_to_closed_ms")),
+                _float_or_none(row.get("entry_spread_bps")),
+                _float_or_none(row.get("fair")),
+                _float_or_none(row.get("mexc_mid")),
+                _float_or_none(row.get("price")),
+                _float_or_none(row.get("notional")),
+                _float_or_none(row.get("fill_ratio")),
+                row.get("endpoint"),
+                1 if row.get("private_ws_connected") else 0 if row.get("private_ws_connected") is not None else None,
+                _int_or_none(row.get("auth_error_streak")),
+                json.dumps(row.get("extra") or {}, ensure_ascii=False),
+            ),
         )
         await self._db.commit()
 

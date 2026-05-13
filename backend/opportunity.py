@@ -29,6 +29,49 @@ class OpportunityEngine:
     def __init__(self, cfg) -> None:
         self.cfg = cfg
 
+    _PER_SYMBOL_STRATEGY_FIELDS = (
+        "raw_momentum_min_bps", "raw_momentum_max_bps",
+        "raw_momentum_require_5s_agree", "raw_momentum_anti_fade_30s_bps",
+        "raw_momentum_require_lag", "raw_momentum_min_lag_bps",
+        "raw_momentum_max_chase_bps", "raw_momentum_require_book_alignment",
+        "raw_momentum_min_imbalance_log", "raw_momentum_require_ofi_alignment",
+        "raw_momentum_min_ofi_usdt",
+        "imbalance_min_log", "imbalance_max_log", "imbalance_require_lag",
+        "imbalance_min_lag_bps", "imbalance_max_chase_bps",
+        "confluence_min_velocity_bps", "confluence_max_velocity_bps",
+        "confluence_min_ofi_usdt", "confluence_min_imbalance_log",
+        "confluence_require_lag", "confluence_min_lag_bps",
+        "confluence_max_chase_bps", "book_lean_min_ratio",
+        "bb_revert_z_entry", "bb_revert_z_max",
+        "entry_z", "meanrev_min_spread_bps",
+        "meanrev_require_book_alignment", "meanrev_min_imbalance_log",
+    )
+
+    def _strategy_overrides(self, override):
+        if override is None:
+            return {}
+        out = {}
+        for name in self._PER_SYMBOL_STRATEGY_FIELDS:
+            value = getattr(override, name, None)
+            if value is not None:
+                out[name] = value
+        return out
+
+    def _evaluate_with_strategy_override(self, symbol: str, st: SymbolStats, algo: str, override):
+        values = self._strategy_overrides(override)
+        if not values:
+            return self._evaluate_single(symbol, st, algo)
+
+        strategy = self.cfg.strategy
+        old = {name: getattr(strategy, name, None) for name in values}
+        try:
+            for name, value in values.items():
+                setattr(strategy, name, value)
+            return self._evaluate_single(symbol, st, algo)
+        finally:
+            for name, value in old.items():
+                setattr(strategy, name, value)
+
     def _metric_for_side(self, st: SymbolStats, side: str, suffix: str):
         prefix = "long" if str(side).upper() == "LONG" else "short"
         return getattr(st, f"{prefix}_{suffix}", None)
@@ -253,7 +296,7 @@ class OpportunityEngine:
         signals = []
         results = []
         for algo in algos:
-            result = self._evaluate_single(symbol, st, algo)
+            result = self._evaluate_with_strategy_override(symbol, st, algo, override)
             results.append(result)
             if result.score > 0 and result.side_hint and not result.blocked_reason:
                 signals.append((result.score, result.side_hint, result))
@@ -744,6 +787,24 @@ class OpportunityEngine:
                 return st
             if (side == "LONG" and imb <= 0) or (side == "SHORT" and imb >= 0):
                 st.blocked_reason = f"book_against={imb:+.2f}"
+                return st
+
+        # MEXC bid-ask spread filter: don't enter when spread is too wide
+        max_mexc_spread_bps = float(getattr(s, "raw_momentum_max_mexc_spread_bps", 0.0) or 0.0)
+        if max_mexc_spread_bps > 0 and st.mexc_spread_bps is not None:
+            if st.mexc_spread_bps > max_mexc_spread_bps:
+                st.blocked_reason = f"wide_mexc_spread={st.mexc_spread_bps:.1f}bps"
+                return st
+
+        # Density filter (Nikitos-style): require book imbalance to support direction
+        # bid-heavy (imb > 0) supports LONG, ask-heavy (imb < 0) supports SHORT
+        min_density_log = float(getattr(s, "raw_momentum_min_density_log", 0.0) or 0.0)
+        if min_density_log > 0 and imb is not None:
+            if side == "LONG" and imb < min_density_log:
+                st.blocked_reason = f"density_against_long={imb:+.2f}"
+                return st
+            if side == "SHORT" and imb > -min_density_log:
+                st.blocked_reason = f"density_against_short={imb:+.2f}"
                 return st
 
         depth = st.mexc_book_top10_notional or 0.0

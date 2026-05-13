@@ -76,6 +76,7 @@ def _max_burst_in_window(samples: Deque[Tuple[float, float]], now: float,
 class _SymbolAgg:
     mexc_book: OrderBook = field(default_factory=OrderBook)
     binance_book: OrderBook = field(default_factory=OrderBook)
+    mexc_fair: Optional[float] = None
 
     # Rolling spread samples (ts, MEXC_mid - F) — limited window
     spread_samples: Deque[Tuple[float, float]] = field(
@@ -85,6 +86,7 @@ class _SymbolAgg:
     fair_samples: Deque[Tuple[float, float]] = field(
         default_factory=lambda: deque(maxlen=400)
     )
+    fair_ema: Optional[float] = None
     # Rolling MEXC mid samples for self-reverting strategy
     mexc_mid_samples: Deque[Tuple[float, float]] = field(
         default_factory=lambda: deque(maxlen=2000)
@@ -138,6 +140,47 @@ class Aggregator:
     def symbols(self) -> List[str]:
         return list(self._symbols.keys())
 
+    def _fair_price_mode(self) -> str:
+        strategy = getattr(getattr(self, "cfg", None), "strategy", None)
+        mode = str(getattr(strategy, "fair_price_mode", "mid") or "mid").strip().lower()
+        return mode or "mid"
+
+    def _fair_ema_alpha(self) -> float:
+        strategy = getattr(getattr(self, "cfg", None), "strategy", None)
+        alpha = float(getattr(strategy, "fair_ema_alpha", 0.2) or 0.2)
+        return min(1.0, max(0.0, alpha))
+
+    def _binance_fair_value(self, agg: _SymbolAgg) -> Optional[float]:
+        mode = self._fair_price_mode()
+        if mode in {"ema_mid", "blend_mexc_fair"}:
+            return agg.fair_ema if agg.fair_ema is not None else agg.binance_book.mid
+        return agg.binance_book.mid
+
+    def _selected_fair_value(self, agg: _SymbolAgg) -> Optional[float]:
+        mode = self._fair_price_mode()
+        binance_fair = self._binance_fair_value(agg)
+        mexc_fair = agg.mexc_fair
+        if mode == "mexc_fair":
+            return mexc_fair if mexc_fair is not None else binance_fair
+        if mode == "blend_mexc_fair":
+            if binance_fair is not None and mexc_fair is not None:
+                return (binance_fair + mexc_fair) / 2.0
+            return mexc_fair if mexc_fair is not None else binance_fair
+        return binance_fair
+
+    def _update_fair_reference(self, agg: _SymbolAgg, ts: float) -> None:
+        mid = agg.binance_book.mid
+        if mid is None:
+            return
+        alpha = self._fair_ema_alpha()
+        if agg.fair_ema is None or alpha >= 1.0:
+            agg.fair_ema = mid
+        else:
+            agg.fair_ema = (alpha * mid) + ((1.0 - alpha) * agg.fair_ema)
+        fair_ref = self._selected_fair_value(agg)
+        if fair_ref is not None:
+            agg.fair_samples.append((ts, fair_ref))
+
     def get_book(self, mexc_symbol: str) -> Optional[OrderBook]:
         a = self._symbols.get(mexc_symbol)
         if not a:
@@ -174,10 +217,24 @@ class Aggregator:
             return
         agg.binance_book = OrderBook(bids=b, asks=a, ts=ts)
 
-        mid = agg.binance_book.mid
-        if mid is not None:
-            agg.fair_samples.append((ts, mid))
-            self._update_spread_sample(mexc, ts)
+        self._update_fair_reference(agg, ts)
+        self._update_spread_sample(mexc, ts)
+
+    def on_mexc_fair_price(self, mexc_symbol: str, fair_price: float, ts: float) -> None:
+        agg = self._symbols.get(mexc_symbol)
+        if not agg:
+            return
+        try:
+            fair = float(fair_price)
+        except Exception:
+            return
+        if fair <= 0:
+            return
+        agg.mexc_fair = fair
+        fair_ref = self._selected_fair_value(agg)
+        if fair_ref is not None:
+            agg.fair_samples.append((ts, fair_ref))
+        self._update_spread_sample(mexc_symbol, ts)
 
     def on_binance_trade(
         self,
@@ -262,10 +319,10 @@ class Aggregator:
         if not agg:
             return
         m_mid = agg.mexc_book.mid
-        b_mid = agg.binance_book.mid
-        if m_mid is None or b_mid is None:
+        fair_ref = self._selected_fair_value(agg)
+        if m_mid is None or fair_ref is None:
             return
-        agg.spread_samples.append((ts, m_mid - b_mid))
+        agg.spread_samples.append((ts, m_mid - fair_ref))
 
     def compute_stats(self, mexc_symbol: str) -> SymbolStats:
         agg = self._symbols.get(mexc_symbol)
@@ -290,8 +347,8 @@ class Aggregator:
             st.fair = st.mexc_mid
             logger.info(f"[STOCK] {mexc_symbol}: Using MEXC price as fair (no Binance ref): {st.fair}")
         else:
-            # Normal case: use Binance as fair reference
-            st.fair = agg.binance_book.mid
+            # Normal case: use selected Binance-derived fair reference
+            st.fair = self._selected_fair_value(agg)
 
         if st.fair is None or st.mexc_mid is None:
             return st

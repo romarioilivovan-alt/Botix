@@ -195,7 +195,8 @@ class ManagedPosition:
 
     # Speed metrics (NEW)
     signal_ts: float = 0.0       # when signal was detected
-    entry_latency_ms: float = 0.0  # signal_ts -> open_ts (milliseconds)
+    entry_latency_ms: float = 0.0  # signal_ts -> managed/open_ts (milliseconds)
+    entry_confirm_latency_ms: float = 0.0  # signal_ts -> exchange fill confirmation
     entry_algo: Optional[str] = None  # which algorithm triggered entry
     entry_score: float = 0.0     # score at entry
     max_hold_sec: float = 0.0
@@ -209,6 +210,10 @@ class ManagedPosition:
     entry_fv30: Optional[float] = None
     entry_mexc_book_age_ms: Optional[float] = None
     entry_binance_book_age_ms: Optional[float] = None
+    submit_latency_ms: float = 0.0
+    fill_seen_latency_ms: float = 0.0
+    managed_latency_ms: float = 0.0
+    end_to_end_entry_ms: float = 0.0
 
     # SL / TP state
     stop_price: Optional[float] = None
@@ -237,6 +242,12 @@ class ManagedPosition:
     # Exit speed metrics (NEW)
     exit_signal_ts: float = 0.0  # when exit decision was made
     exit_latency_ms: float = 0.0  # exit_signal_ts -> close_ts (milliseconds)
+    close_submit_latency_ms: float = 0.0
+    close_ack_to_closed_ms: float = 0.0
+    close_submit_started_ts: float = 0.0
+    close_ack_ts: float = 0.0
+    pending_close_reason: Optional[str] = None
+    pending_close_at: float = 0.0
     settled_profit_since: float = 0.0
     settled_profit_anchor_bps: float = 0.0
 
@@ -295,6 +306,14 @@ class AppState:
         self.engine_mode: str = "paper"      # paper / real / logger
         self.kill_switch: bool = False
         self.last_kill_reason: str = ""
+        self.run_started_ts: float = 0.0
+        self.session_trade_count: int = 0
+        self.consecutive_losses: int = 0
+        self.emergency_close_count: int = 0
+        self.last_emergency_action: str = ""
+        self.last_emergency_ts: float = 0.0
+        self.auth_error_count: int = 0
+        self.private_api_error_count: int = 0
 
         # Connectivity
         self.binance_ws_ok: bool = False
@@ -327,6 +346,7 @@ class AppState:
                     "pnl": p.last_pnl_usdt,
                     "pnl_pct": p.last_pnl_pct,
                     "entry_latency_ms": p.entry_latency_ms,
+                    "entry_confirm_latency_ms": p.entry_confirm_latency_ms,
                     "entry_algo": p.entry_algo,
                     "entry_score": p.entry_score,
                 })
@@ -372,10 +392,18 @@ class AppState:
                     "mode": self.engine_mode,
                     "kill": self.kill_switch,
                     "kill_reason": self.last_kill_reason,
+                    "run_started_ts": self.run_started_ts,
                     "binance_ok": self.binance_ws_ok,
                     "mexc_ok": self.mexc_ws_ok,
                     "mexc_auth_ok": self.mexc_auth_ok,
                     "mexc_auth_msg": self.mexc_auth_msg,
+                    "session_trade_count": self.session_trade_count,
+                    "consecutive_losses": self.consecutive_losses,
+                    "emergency_close_count": self.emergency_close_count,
+                    "last_emergency_action": self.last_emergency_action,
+                    "last_emergency_ts": self.last_emergency_ts,
+                    "auth_error_count": self.auth_error_count,
+                    "private_api_error_count": self.private_api_error_count,
                 },
                 "balance": self.balance,
                 "available_balance": self.available_balance,

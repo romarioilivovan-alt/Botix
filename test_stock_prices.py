@@ -1,4 +1,4 @@
-"""Test script to investigate how stocks get fair prices on MEXC."""
+﻿"""Test script to investigate how stocks get fair prices on MEXC."""
 import asyncio
 import aiohttp
 import json

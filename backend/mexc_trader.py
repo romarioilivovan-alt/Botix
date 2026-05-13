@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import time
 from typing import Any, Dict, List, Optional
 
@@ -8,104 +7,159 @@ from .models import UserAccount
 from .mexc_api import MexcFuturesAPI
 
 
-logger = logging.getLogger(__name__)
-
-
 class MexcTrader:
     def __init__(self, account: UserAccount, proxy: Optional[str] = None):
         self.api = MexcFuturesAPI(account, proxy=proxy)
         self._contract_detail_cache: Dict[str, tuple[Dict[str, Any], float]] = {}
-        self._auth_failure_count: int = 0
-        self.kill_switch: bool = False
+        self._zero_fee_cache: Dict[str, tuple[bool, float]] = {}
+
+    @staticmethod
+    def _float_from_price_fields(row: Dict[str, Any], *keys: str) -> float:
+        for key in keys:
+            val = row.get(f"{key}FullyScale")
+            if val is None:
+                continue
+            try:
+                price = float(val)
+            except Exception:
+                continue
+            if price > 0:
+                return price
+        for key in keys:
+            val = row.get(key)
+            if val is None:
+                continue
+            try:
+                price = float(val)
+            except Exception:
+                continue
+            if price > 0:
+                return price
+        return 0.0
+
+    def _use_legacy_submit(self) -> bool:
+        path = self._submit_path()
+        return path in {"legacy", "legacy_submit", "submit", "order_submit"}
+
+    def _submit_path(self) -> str:
+        return str(getattr(self.api.account, "order_submit_path", "") or "legacy_submit").strip().lower()
+
+    def _extract_order_id(self, resp: Dict[str, Any]) -> Optional[int]:
+        data = resp.get("data") or {}
+        if not isinstance(data, dict):
+            return None
+        raw = data.get("orderId") or data.get("order_id")
+        try:
+            return int(raw) if raw is not None else None
+        except Exception:
+            return None
+
+    async def _decorate_fill_details(self, resp: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(resp, dict) or not resp.get("success"):
+            return resp
+        order_id = self._extract_order_id(resp)
+        if order_id is None:
+            return resp
+        t0 = time.perf_counter()
+        try:
+            detail = await self.api.get_order(order_id)
+        except Exception:
+            return resp
+        resp["_fill_detail_latency_ms"] = max(0.0, (time.perf_counter() - t0) * 1000.0)
+        if not isinstance(detail, dict) or not detail.get("success"):
+            return resp
+        items = detail.get("data") or []
+        if isinstance(items, dict):
+            row = items
+        elif items:
+            row = items[0]
+        else:
+            return resp
+        if not isinstance(row, dict):
+            return resp
+        try:
+            deal_vol = float(row.get("dealVol") or 0.0)
+        except Exception:
+            deal_vol = 0.0
+        if deal_vol > 0:
+            resp["_final_vol"] = deal_vol
+            avg_price = self._float_from_price_fields(
+                row,
+                "avgDealPrice",
+                "dealAvgPrice",
+                "avgPrice",
+                "priceAvg",
+                "dealPrice",
+                "price",
+            )
+            if avg_price > 0:
+                resp["_avg_price"] = avg_price
+            for key in ("positionId", "positionID", "position_id"):
+                if row.get(key) is not None:
+                    resp["_position_id"] = row.get(key)
+                    break
+            resp["_order_detail"] = row
+        return resp
+
+    def _fast_create_host(self) -> Optional[str]:
+        path = self._submit_path()
+        if path in {"contract", "contract_create", "contract_order_create"}:
+            return "contract"
+        if path in {"futures", "futures_create", "futures_order_create"}:
+            return "futures"
+        return None
+
+    async def _submit_hot_order(
+        self,
+        symbol: str,
+        *,
+        side_code: int,
+        order_type: str,
+        price: Optional[float] = None,
+        vol: float,
+        leverage: int,
+        margin_mode: int,
+        reduce_only: bool = False,
+        position_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if self._use_legacy_submit():
+            return await self.api.submit_legacy_order(
+                symbol,
+                side=side_code,
+                order_type=order_type,
+                price=price,
+                vol=float(vol),
+                leverage=int(leverage),
+                margin_mode=margin_mode,
+                reduce_only=reduce_only,
+                position_id=position_id,
+            )
+        fast_host = self._fast_create_host()
+        if fast_host:
+            return await self.api.submit_fast_create_order(
+                symbol,
+                side=side_code,
+                order_type=order_type,
+                price=price,
+                vol=float(vol),
+                leverage=int(leverage),
+                margin_mode=margin_mode,
+                reduce_only=reduce_only,
+                position_id=position_id,
+                host=fast_host,
+            )
+        return await self.api.create_order(
+            symbol,
+            side=side_code,
+            order_type=order_type,
+            price=price,
+            vol=float(vol),
+            leverage=int(leverage),
+            margin_mode=margin_mode,
+        )
 
     async def close(self) -> None:
         await self.api.close()
-
-    def _check_auth_failure(self, response: Dict[str, Any]) -> None:
-        """Check for 401/403 errors and trigger kill_switch after 3 consecutive failures."""
-        if not isinstance(response, dict):
-            return
-
-        code = response.get("code")
-        success = response.get("success")
-
-        # Check for auth failure (401/403 or explicit auth error)
-        is_auth_error = False
-        if code in (401, 403):
-            is_auth_error = True
-        elif not success:
-            msg = str(response.get("message", "")).lower()
-            if "unauthorized" in msg or "forbidden" in msg or "authentication" in msg:
-                is_auth_error = True
-
-        if is_auth_error:
-            self._auth_failure_count += 1
-            logger.warning(
-                "Auth failure detected (count=%d/3): code=%s, message=%s",
-                self._auth_failure_count,
-                code,
-                response.get("message"),
-            )
-
-            if self._auth_failure_count >= 3:
-                self.kill_switch = True
-                logger.error(
-                    "KILL SWITCH ACTIVATED: 3 consecutive auth failures detected. "
-                    "Credentials may be invalid or expired. All positions will be closed."
-                )
-        else:
-            # Reset counter on successful auth
-            if success:
-                self._auth_failure_count = 0
-
-    async def _emergency_close_all_positions(self) -> None:
-        """Emergency close all open positions via market IOC orders."""
-        logger.warning("Emergency close: attempting to close all open positions")
-
-        try:
-            positions = await self.get_positions_raw()
-            if not positions:
-                logger.info("No open positions to close")
-                return
-
-            for pos in positions:
-                try:
-                    symbol = str(pos.get("symbol", ""))
-                    hold_vol = float(pos.get("holdVol", 0) or 0)
-                    pos_type = int(pos.get("positionType", 0) or 0)
-                    leverage = int(pos.get("leverage", 1) or 1)
-
-                    if hold_vol <= 0:
-                        continue
-
-                    side = "LONG" if pos_type == 1 else "SHORT"
-                    logger.warning(
-                        "Emergency closing position: %s %s vol=%.2f",
-                        symbol,
-                        side,
-                        hold_vol,
-                    )
-
-                    result = await self.close_market(
-                        symbol_full=symbol,
-                        side=side,
-                        hold_vol=hold_vol,
-                        leverage=leverage,
-                    )
-
-                    if result.get("success"):
-                        logger.info("Successfully closed %s %s", symbol, side)
-                    else:
-                        logger.error(
-                            "Failed to close %s %s: %s",
-                            symbol,
-                            side,
-                            result.get("message"),
-                        )
-                except Exception as e:
-                    logger.error("Error closing position %s: %s", pos, e)
-        except Exception as e:
-            logger.error("Error in emergency close all: %s", e)
 
     async def get_available_usdt(self) -> float:
         v = await self.api.get_available_usdt()
@@ -113,9 +167,6 @@ class MexcTrader:
 
     async def get_usdt_balance_snapshot(self) -> Dict[str, float]:
         snap = await self.api.get_usdt_balance_snapshot()
-        self._check_auth_failure(snap)
-        if self.kill_switch:
-            await self._emergency_close_all_positions()
         return {
             "available": float(snap.get("available") or 0.0),
             "equity": float(snap.get("equity") or 0.0),
@@ -123,9 +174,6 @@ class MexcTrader:
 
     async def get_positions_raw(self) -> List[Dict[str, Any]]:
         res = await self.api.get_positions()
-        self._check_auth_failure(res)
-        if self.kill_switch:
-            await self._emergency_close_all_positions()
         if res.get("success"):
             data = res.get("data") or []
             if isinstance(data, list):
@@ -158,7 +206,7 @@ class MexcTrader:
             return [x for x in data if isinstance(x, dict)]
         return []
 
-    async def get_contract_detail(self, symbol_full: str, ttl: float = 60.0) -> Optional[Dict[str, Any]]:
+    async def get_contract_detail(self, symbol_full: str, ttl: float = 600.0) -> Optional[Dict[str, Any]]:
         sym = symbol_full if "_" in symbol_full else f"{symbol_full}_USDT"
         now = time.monotonic()
         cached = self._contract_detail_cache.get(sym)
@@ -177,13 +225,25 @@ class MexcTrader:
         self._contract_detail_cache[sym] = (dict(raw), now)
         return dict(raw)
 
-    async def is_zero_fee_symbol(self, symbol_full: str) -> bool:
+    async def warm_symbol_meta(self, symbol_full: str, ttl: float = 600.0) -> Optional[Dict[str, Any]]:
+        return await self.get_contract_detail(symbol_full, ttl=ttl)
+
+    async def is_zero_fee_symbol(self, symbol_full: str, ttl: float = 600.0) -> bool:
         """Live check: symbol must currently have 0 trading fee.
 
         The flag can disappear, so we check just-in-time before each open.
         """
-        d = await self.get_contract_detail(symbol_full)
+        sym = symbol_full if "_" in symbol_full else f"{symbol_full}_USDT"
+        now = time.monotonic()
+        cached = self._zero_fee_cache.get(sym)
+        if cached is not None:
+            value, ts = cached
+            if now - ts < ttl:
+                return bool(value)
+
+        d = await self.get_contract_detail(sym, ttl=ttl)
         if not d:
+            self._zero_fee_cache[sym] = (False, now)
             return False
         flag = d.get("isZeroFeeSymbol")
         if flag is None:
@@ -191,9 +251,11 @@ class MexcTrader:
         try:
             if isinstance(flag, str):
                 flag = flag.strip()
-            return bool(int(flag)) if isinstance(flag, (int, str)) else bool(flag)
+            value = bool(int(flag)) if isinstance(flag, (int, str)) else bool(flag)
         except Exception:
-            return bool(flag)
+            value = bool(flag)
+        self._zero_fee_cache[sym] = (value, now)
+        return value
 
     async def get_max_leverage(self, symbol_full: str) -> Optional[int]:
         d = await self.get_contract_detail(symbol_full)
@@ -290,10 +352,11 @@ class MexcTrader:
 
         # entry
         try:
-            open_price = (
-                float(pos.get("newOpenAvgPrice") or 0)
-                or float(pos.get("holdAvgPrice") or 0)
-                or float(pos.get("openAvgPrice") or 0)
+            open_price = self._float_from_price_fields(
+                pos,
+                "newOpenAvgPrice",
+                "holdAvgPrice",
+                "openAvgPrice",
             )
         except Exception:
             open_price = 0.0
@@ -403,28 +466,34 @@ class MexcTrader:
         notional_usdt: float,
         leverage: int,
         margin_mode: int = 1,
+        vol_override: Optional[float] = None,
     ) -> Dict[str, Any]:
-        if self.kill_switch:
-            return {"success": False, "message": "Kill switch activated - trading disabled"}
-
         symbol = symbol_full.replace("_USDT", "")
         side_code = 1 if side.upper() == "LONG" else 3
-        vol = await self.api.calc_volume_from_usdt(symbol, notional_usdt, side=side_code)
+        vol = vol_override
+        if vol is None or vol <= 0:
+            vol = await self.api.calc_volume_from_usdt(symbol, notional_usdt, side=side_code)
         if vol is None or vol <= 0:
             return {"success": False, "message": "Could not calc volume"}
-
-        result = await self.api.create_order(
+        order_type = "5"
+        resp = await self._submit_hot_order(
             symbol,
-            side=side_code,
-            order_type="5",
+            side_code=side_code,
+            order_type=order_type,
             vol=float(vol),
             leverage=int(leverage),
             margin_mode=margin_mode,
         )
-        self._check_auth_failure(result)
-        if self.kill_switch:
-            await self._emergency_close_all_positions()
-        return result
+        if isinstance(resp, dict):
+            resp.setdefault("_requested_vol", float(vol))
+            resp.setdefault("_requested_notional", float(notional_usdt))
+            resp.setdefault("_requested_order_type", order_type)
+            # Market orders on this line are managed optimistically from create ACK.
+            # Waiting for order_detail adds 30-100ms and private WS/position reconcile
+            # will correct the exact exchange state shortly after.
+            if resp.get("success"):
+                resp.setdefault("_final_vol", float(vol))
+        return resp
 
     async def open_ioc(
         self,
@@ -436,9 +505,6 @@ class MexcTrader:
         margin_mode: int = 1,
     ) -> Dict[str, Any]:
         """IOC entry (orderType=3) to mirror paper's taker_ioc simulation."""
-        if self.kill_switch:
-            return {"success": False, "message": "Kill switch activated - trading disabled"}
-
         symbol = symbol_full.replace("_USDT", "")
         side_code = 1 if side.upper() == "LONG" else 3
         vol = await self.api.calc_volume_from_usdt(
@@ -449,24 +515,25 @@ class MexcTrader:
         )
         if vol is None or vol <= 0:
             return {"success": False, "message": "Could not calc volume"}
-
-        resp = await self.api.create_order(
+        # Keep live semantics aligned with PaperExecutor's taker IOC model.
+        # orderType=5 is market on MEXC; using it here turns a capped IOC entry
+        # into an uncapped market entry and can fill well past fair price.
+        order_type = "3"
+        resp = await self._submit_hot_order(
             symbol,
-            side=side_code,
-            order_type="3",
+            side_code=side_code,
+            order_type=order_type,
             price=float(price),
             vol=float(vol),
             leverage=int(leverage),
             margin_mode=margin_mode,
         )
-        self._check_auth_failure(resp)
-        if self.kill_switch:
-            await self._emergency_close_all_positions()
-
         if isinstance(resp, dict):
             resp.setdefault("_requested_vol", float(vol))
             resp.setdefault("_requested_notional", float(notional_usdt))
             resp.setdefault("_requested_price", float(price))
+            resp.setdefault("_requested_order_type", order_type)
+            resp = await self._decorate_fill_details(resp)
         return resp
 
     async def open_limit(
@@ -479,9 +546,6 @@ class MexcTrader:
         margin_mode: int = 1,
     ) -> Dict[str, Any]:
         """Place a maker limit order to open. Returns the create_order response."""
-        if self.kill_switch:
-            return {"success": False, "message": "Kill switch activated - trading disabled"}
-
         symbol = symbol_full.replace("_USDT", "")
         side_code = 1 if side.upper() == "LONG" else 3
         vol = await self.api.calc_volume_from_usdt(
@@ -489,8 +553,7 @@ class MexcTrader:
         )
         if vol is None or vol <= 0:
             return {"success": False, "message": "Could not calc volume"}
-
-        result = await self.api.create_order(
+        return await self.api.create_order(
             symbol,
             side=side_code,
             order_type="2",
@@ -499,10 +562,6 @@ class MexcTrader:
             leverage=int(leverage),
             margin_mode=margin_mode,
         )
-        self._check_auth_failure(result)
-        if self.kill_switch:
-            await self._emergency_close_all_positions()
-        return result
 
     async def cancel_all_for(self, symbol_full: str) -> Dict[str, Any]:
         return await self.api.cancel_orders(symbol_full)
@@ -518,6 +577,8 @@ class MexcTrader:
         hold_vol: float,
         leverage: int,
         margin_mode: int = 1,
+        price: Optional[float] = None,
+        position_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         symbol = symbol_full.replace("_USDT", "")
         # В web-private MEXC Futures коды стороны отличаются от OpenAPI:
@@ -528,16 +589,42 @@ class MexcTrader:
         # Ранее тут было перепутано (LONG->2, SHORT->4), из-за чего биржа
         # отвечала: "Position is nonexistent or closed" при попытке закрытия.
         side_code = 4 if side.upper() == "LONG" else 2
-        result = await self.api.create_order(
+        return await self._submit_hot_order(
             symbol,
-            side=side_code,
+            side_code=side_code,
             order_type="5",
+            price=float(price) if price is not None else None,
             vol=float(hold_vol),
             leverage=int(leverage),
             margin_mode=margin_mode,
+            reduce_only=True,
+            position_id=position_id,
         )
-        self._check_auth_failure(result)
-        return result
+
+    async def close_reduce_only(
+        self,
+        symbol_full: str,
+        side: str,
+        hold_vol: float,
+        leverage: int,
+        margin_mode: int = 1,
+        price: Optional[float] = None,
+        position_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Close-only wrapper used by watchdog/emergency paths.
+
+        MEXC web-private close side codes (2/4) are already close-position only
+        semantics for the opposite side, so this is our reduce-only path.
+        """
+        return await self.close_market(
+            symbol_full,
+            side,
+            hold_vol,
+            leverage,
+            margin_mode=margin_mode,
+            price=price,
+            position_id=position_id,
+        )
 
     async def place_stop_by_position(
         self,
@@ -551,9 +638,6 @@ class MexcTrader:
 
         NOTE: We only use stop-loss for now. take_profit_price is optional.
         """
-        if self.kill_switch:
-            return {"success": False, "message": "Kill switch activated - trading disabled"}
-
         profit_trend = None
         loss_trend = None
         if side:
@@ -568,17 +652,8 @@ class MexcTrader:
                 profit_trend = 1
                 loss_trend = 2
 
-        result = await self.api.add_stop_order_by_position(
+        return await self.api.add_stop_order_by_position(
             int(position_id),
-            take_profit_price=take_profit_price,
-            stop_loss_price=stop_loss_price,
-            profit_trend=profit_trend,
-            loss_trend=loss_trend,
-        )
-        self._check_auth_failure(result)
-        if self.kill_switch:
-            await self._emergency_close_all_positions()
-        return result
             take_profit_price=take_profit_price,
             stop_loss_price=stop_loss_price,
             profit_trend=profit_trend,
